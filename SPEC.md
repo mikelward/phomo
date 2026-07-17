@@ -74,6 +74,33 @@ platform, not a separate calling app you have to remember to open.
   App Bundle per-ABI splitting keeps the user's download smaller) and is
   GPLv3-licensed (or commercial). Those are acceptable for this app.
 
+### Signaling and media defaults
+
+- **Default posture: TLS for SIP signaling, SRTP for media, Opus as the
+  preferred codec.** Signaling transport (UDP/TCP/TLS) and media transport
+  (RTP/SRTP) are independent decisions:
+  - **Signaling → TLS.** SIP signaling is reliable request/response messaging,
+    not real-time, so TLS's only cost is a one-time handshake at call setup —
+    it adds nothing to in-call latency. In return it encrypts the credentials
+    and call metadata in SIP headers, keeps a persistent NAT binding (unlike
+    UDP, whose bindings time out), avoids fragmentation of large INVITEs (ICE
+    candidates make them big), and traverses restrictive Wi-Fi firewalls
+    (hotels/cafés often block UDP SIP ports but allow TLS). It is also the
+    Twilio-recommended "secure trunking" transport.
+  - **Media → SRTP over UDP.** The audio always runs over UDP regardless of the
+    signaling transport — you never want TCP retransmitting stale voice — so the
+    TLS choice above imposes no real-time penalty. SRTP encrypts the media.
+  - **Codec → Opus preferred.** For the target use case (transcontinental calls),
+    the dominant quality lever is not the transport but the codec: Opus's forward
+    error correction and packet-loss concealment are what hide long-haul packet
+    loss, and its adaptive wideband quality suits good Wi-Fi. Phomo lets Linphone
+    negotiate Opus and does not fall back to narrowband PCMU/PCMA unless the trunk
+    requires it.
+- **Signaling transport is user-configurable** (the account carries a transport
+  choice), so a trunk that only offers UDP or TCP + plain RTP still works; TLS is
+  only the default. Anything touching real audio is verified on a real device with
+  a real trunk, never in the sandbox.
+
 ## Call routing — how a dialed number reaches Phomo
 
 Phomo integrates with the Android **Telecom** framework rather than trying to
