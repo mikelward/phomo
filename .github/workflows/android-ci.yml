@@ -1,0 +1,611 @@
+name: Android CI
+
+on:
+  pull_request:
+    # Skip CI for pushes whose every changed path is housekeeping that
+    # has no effect on the app build:
+    #   - documentation (AGENTS.md, SPEC.md, docs/*), with PRIVACY.md
+    #     negated back in because it backs the hosted privacy policy
+    #     linked from the About dialog — a PRIVACY.md-only push still
+    #     needs to build and (on main) ship a Play release;
+    #   - any dotfile at the repo root (`.gitignore`, `.editorconfig`,
+    #     `.gitattributes`, …) or anything under any dotdir at the repo
+    #     root (`.claude/`, `.idea/`, `.vscode/`, `.cursor/`,
+    #     `.github/ISSUE_TEMPLATE/`, `.github/dependabot.yml`, …), with
+    #     `.github/workflows/**` negated back in so workflow edits
+    #     re-trigger CI and validate themselves.
+    # GitHub Actions evaluates paths-ignore with `dot: true` and honors
+    # `!` negation when it follows a positive pattern, applied in order.
+    paths-ignore:
+      - '**/*.md'
+      - '!PRIVACY.md'
+      - '.*'
+      - '.*/**'
+      - '!.github/workflows/**'
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+      - '!PRIVACY.md'
+      - '.*'
+      - '.*/**'
+      - '!.github/workflows/**'
+  # Manual override for the `deploy` job: lets a maintainer force an
+  # internal-track release from the GitHub web UI (works from a phone
+  # browser — no local build tooling needed) when `main`'s tip is stuck
+  # behind the "no release-worthy commits" skip (see "Build release
+  # notes" in the `deploy` job) but a tester needs the current tip on
+  # their device anyway. No inputs: dispatching always targets the
+  # selected ref (main by default in the UI) and the `deploy` job's
+  # `if:` below re-checks that.
+  workflow_dispatch:
+
+# No workflow-level permissions — each job declares the least-privilege
+# scope it needs.
+
+jobs:
+  build:
+    name: Build and unit test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Used by "Print failing test details" to post a comment on the
+      # originating PR when `./gradlew test` fails.
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654  # v5.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@4c125117fe7c5aed11272ec4213f602f012f89f2  # v5
+        with:
+          # PRs run in `pull_request` (not `pull_request_target`), so a
+          # malicious commit can poison its own branch's cache but not main's.
+          # Lock PRs to read-only; only main pushes write the shared cache.
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Materialize debug keystore
+        # Decode the checked-in-only-as-a-secret debug keystore so CI-built APKs
+        # share a signing identity with previous CI builds. Without this, every
+        # runner generates its own debug keystore and tester devices refuse to
+        # install successive Firebase App Distribution releases as updates.
+        # Skipped on PRs / forks where the secret isn't set.
+        if: env.DEBUG_KEYSTORE_BASE64 != ''
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "${DEBUG_KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/debug.keystore"
+          echo "DEBUG_KEYSTORE_FILE=${RUNNER_TEMP}/debug.keystore" >> "${GITHUB_ENV}"
+
+      - name: Materialize google-services.json
+        # Drops the Firebase project config into app/google-services.json so the
+        # google-services + crashlytics gradle plugins activate. Skipped on
+        # forks / PRs without the secret — the build still finishes, just
+        # without telemetry.
+        if: env.GOOGLE_SERVICES_JSON != ''
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: printf '%s' "${GOOGLE_SERVICES_JSON}" > app/google-services.json
+
+      - name: Build debug APK
+        env:
+          DEBUG_KEYSTORE_PASSWORD: ${{ secrets.DEBUG_KEYSTORE_PASSWORD }}
+          DEBUG_KEY_PASSWORD: ${{ secrets.DEBUG_KEY_PASSWORD }}
+          DEBUG_KEY_ALIAS: ${{ secrets.DEBUG_KEY_ALIAS }}
+        run: ./gradlew assembleDebug
+
+      - name: Run unit tests
+        run: ./gradlew test
+
+      - name: Print failing test details
+        # When `gradlew test` fails the JUnit XML still contains the failure
+        # messages and stack traces. Dump them to the job log AND, on a PR
+        # build, post them as a PR comment so the same data is reachable
+        # without needing to sign in to view the job log or unzip the artifact.
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          JOB_NAME: ${{ github.job }}
+        run: |
+          shopt -s nullglob globstar
+          summary=""
+          for xml in app/build/test-results/**/TEST-*.xml; do
+            if grep -q "<\(failure\|error\)" "$xml"; then
+              echo "::group::$xml"
+              cat "$xml"
+              echo "::endgroup::"
+              summary+=$'\n\n'"### \`$xml\`"$'\n```xml\n'"$(cat "$xml")"$'\n```'
+            fi
+          done
+          if [ -n "$PR_NUMBER" ] && [ -n "$summary" ]; then
+            body=$'<!-- ci-failure -->'$'\n'"**${JOB_NAME} failed.** Failing test reports:"$'\n'"$summary"
+            curl -sS -X POST \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              -d "$(jq -n --arg body "$body" '{body:$body}')" > /dev/null
+          fi
+
+      - name: Upload unit test reports
+        # Always upload so a failed test run leaves the JUnit XMLs and HTML
+        # reports for inspection.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: unit-test-reports
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 1
+
+      - name: Run lint
+        run: ./gradlew lint
+
+  screenshot-tests:
+    name: Screenshot unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # Write so "Commit refreshed screenshots" below can push regenerated
+      # snapshot PNGs back to a same-repo PR branch, and so "Post screenshot
+      # diffs" can upsert its PR comment.
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
+        with:
+          fetch-depth: 0
+          # Same-repo PRs check out the head *branch* (not the read-only
+          # refs/pull/N/merge ref) so "Commit refreshed screenshots" can push
+          # to it. Fork PRs and main pushes keep the default checkout.
+          ref: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref || '' }}
+          # Don't leave the write-scoped token in .git/config while the Gradle
+          # suites run PR-controlled build/test code; the one step that needs
+          # to push receives the token via its own env instead.
+          persist-credentials: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654  # v5.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@4c125117fe7c5aed11272ec4213f602f012f89f2  # v5
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Clear committed snapshots before recording
+        # Recording only overwrites files the suites still produce: a PNG whose
+        # test was removed or renamed would survive checkout untouched, read as
+        # "in sync", and stay committed forever. Start from an empty directory
+        # so the refresh commit also stages deletions for anything no longer
+        # recorded.
+        run: |
+          rm -rf app/src/test/snapshots/images
+          mkdir -p app/src/test/snapshots/images
+
+      - name: Run home screen screenshot tests
+        # Records the home surface in light and dark themes so the PR
+        # `roborazzi-screenshots` artifact captures visual changes. Add one
+        # `run:` step per new *ScreenshotTest class — a class not on this
+        # allow-list never records snapshots in CI (see AGENTS.md "Testing
+        # expectations").
+        run: ./gradlew :app:testDebugUnitTest --tests "dev.phomo.HomeScreenshotTest" -Proborazzi.test.record=true
+
+      - name: Print failing test details
+        if: failure()
+        run: |
+          shopt -s nullglob globstar
+          for xml in app/build/test-results/**/TEST-*.xml; do
+            if grep -q "<\(failure\|error\)" "$xml"; then
+              echo "::group::$xml"
+              cat "$xml"
+              echo "::endgroup::"
+            fi
+          done
+
+      - name: Commit refreshed screenshots
+        # The record step above overwrites app/src/test/snapshots/images/ with
+        # what this runner actually renders. This commits any drift back to the
+        # PR branch (subject prefixed `ci:`, so release notes skip it) so the
+        # committed set always matches the last green recording.
+        #
+        # Scope and safety:
+        #   - Same-repo PRs only: fork branches aren't pushable with the
+        #     workflow token.
+        #   - Runs only when every screenshot suite above passed.
+        #   - No recursion: pushes made with the workflow's GITHUB_TOKEN do not
+        #     trigger new workflow runs; the marker-subject check below is
+        #     belt-and-braces for setups that swap in a PAT.
+        #   - A concurrent human push between checkout and here makes the push
+        #     fail; that's surfaced as a warning, not a red job.
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(git log -1 --pretty=%s)" = "ci: refresh recorded screenshots" ]; then
+            echo "Head commit is already a screenshot refresh; skipping."
+            exit 0
+          fi
+          if [ -z "$(git status --porcelain -- app/src/test/snapshots/images)" ]; then
+            echo "Recorded screenshots match the committed ones; nothing to do."
+            exit 0
+          fi
+          git status --porcelain -- app/src/test/snapshots/images
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/test/snapshots/images
+          git commit -m "ci: refresh recorded screenshots"
+          push_url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if ! git push "$push_url" "HEAD:${GITHUB_HEAD_REF}"; then
+            # The branch can vanish mid-run (PR merged/closed and head ref
+            # auto-deleted). ls-remote --exit-code exits 2 exactly when the
+            # remote answered and the ref does not exist; auth/transport
+            # failures exit differently and must still fail the job.
+            set +e
+            remote_ref=$(git ls-remote --exit-code "$push_url" "refs/heads/${GITHUB_HEAD_REF}")
+            ref_status=$?
+            set -e
+            if [ "$ref_status" -eq 2 ]; then
+              echo "::warning::Branch ${GITHUB_HEAD_REF} no longer exists (PR merged or closed while this job ran); skipping the screenshot refresh push."
+              exit 0
+            fi
+            if [ "$ref_status" -ne 0 ]; then
+              echo "::error::Could not query refs/heads/${GITHUB_HEAD_REF} on the remote (ls-remote exit ${ref_status}); the snapshot sync automation is broken."
+              exit 1
+            fi
+            if [ "${remote_ref%%[[:space:]]*}" != "$(git rev-parse HEAD^)" ]; then
+              echo "::warning::Screenshot refresh push lost a race with another push to ${GITHUB_HEAD_REF}; the next run will retry."
+              exit 0
+            fi
+            echo "::error::Screenshot refresh push to ${GITHUB_HEAD_REF} failed for a non-race reason; the snapshot sync automation is broken."
+            exit 1
+          fi
+
+      - name: Post screenshot diffs as a PR comment
+        # Embeds every snapshot this PR adds or changes, pinned to commit SHAs,
+        # into a single auto-updated PR comment (marker: <!-- screenshot-diff -->)
+        # so reviewers see the visual delta inline without downloading the
+        # artifact. continue-on-error: this is a convenience comment, not a gate.
+        continue-on-error: true
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          BASE_SHA=$(git merge-base HEAD "origin/${GITHUB_BASE_REF}")
+          HEAD_SHA=$(git rev-parse HEAD)
+          mapfile -t entries < <(git diff --name-status "$BASE_SHA" HEAD -- app/src/test/snapshots/images/ | grep -E '^[AM]' || true)
+          if [ ${#entries[@]} -eq 0 ]; then
+            echo "No added or changed screenshots vs merge-base; skipping comment."
+            exit 0
+          fi
+          raw="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}"
+          body="<!-- screenshot-diff -->"$'\n'"## Screenshot diffs"$'\n\n'"Auto-posted by CI. Images pinned to \`${HEAD_SHA:0:7}\` (before images to the merge-base \`${BASE_SHA:0:7}\`)."$'\n'
+          count=0
+          for entry in "${entries[@]}"; do
+            status="${entry%%$'\t'*}"
+            path="${entry#*$'\t'}"
+            name=$(basename "$path")
+            count=$((count+1))
+            if [ "$count" -gt 20 ]; then
+              body+=$'\n'"_…truncated: more than 20 added/changed screenshots; see the roborazzi-screenshots artifact._"
+              break
+            fi
+            if [ "$status" = "A" ]; then
+              body+=$'\n'"**Added — \`${name}\`**"$'\n\n'"<img src=\"${raw}/${HEAD_SHA}/${path}\" width=\"320\">"$'\n'
+            else
+              body+=$'\n'"**Changed — \`${name}\`**"$'\n\n'"| Before | After |"$'\n'"| --- | --- |"$'\n'"| <img src=\"${raw}/${BASE_SHA}/${path}\" width=\"320\"> | <img src=\"${raw}/${HEAD_SHA}/${path}\" width=\"320\"> |"$'\n'
+            fi
+          done
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          existing=$(curl -sS \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "${api}/issues/${PR_NUMBER}/comments?per_page=100" \
+            | jq -r '[.[] | select(.body | startswith("<!-- screenshot-diff -->"))][0].id // empty')
+          payload=$(jq -n --arg body "$body" '{body:$body}')
+          if [ -n "$existing" ]; then
+            curl -sS -X PATCH \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "${api}/issues/comments/${existing}" \
+              -d "$payload" > /dev/null
+            echo "Updated screenshot-diff comment ${existing}."
+          else
+            curl -sS -X POST \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "${api}/issues/${PR_NUMBER}/comments" \
+              -d "$payload" > /dev/null
+            echo "Posted new screenshot-diff comment."
+          fi
+
+      - name: Upload Roborazzi screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: roborazzi-screenshots
+          path: app/src/test/snapshots/images/
+
+      - name: Upload screenshot test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: screenshot-test-reports
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 1
+
+  deploy:
+    name: Distribute and release
+    # Production deployment job. Gated three ways:
+    #   1. `if:` — only on a push to main or a manual workflow_dispatch
+    #      explicitly targeting main — never on PRs.
+    #   2. `environment: production` — secrets used here live in the
+    #      `production` environment with deployment protection rules.
+    #   3. `needs:` — only after build and screenshot-tests both pass.
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [build, screenshot-tests]
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654  # v5.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@4c125117fe7c5aed11272ec4213f602f012f89f2  # v5
+
+      - name: Materialize debug keystore
+        # The Firebase distribution APK is a debug build (so testers can
+        # side-load over previous installs), signed with the shared debug
+        # keystore so successive Firebase releases install as updates.
+        if: env.DEBUG_KEYSTORE_BASE64 != ''
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "${DEBUG_KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/debug.keystore"
+          echo "DEBUG_KEYSTORE_FILE=${RUNNER_TEMP}/debug.keystore" >> "${GITHUB_ENV}"
+
+      - name: Materialize google-services.json
+        if: env.GOOGLE_SERVICES_JSON != ''
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: printf '%s' "${GOOGLE_SERVICES_JSON}" > app/google-services.json
+
+      - name: Build debug APK for Firebase distribution
+        env:
+          DEBUG_KEYSTORE_PASSWORD: ${{ secrets.DEBUG_KEYSTORE_PASSWORD }}
+          DEBUG_KEY_PASSWORD: ${{ secrets.DEBUG_KEY_PASSWORD }}
+          DEBUG_KEY_ALIAS: ${{ secrets.DEBUG_KEY_ALIAS }}
+        run: ./gradlew assembleDebug
+
+      - name: Build release notes
+        # Walks every commit in this push oldest-first and collects the subject
+        # line of each one worth shipping as a release note (to Firebase App
+        # Distribution and the Play Store internal track):
+        #   - skip commits whose subject starts with a non-user-facing prefix
+        #     (`ci:`, `docs:`, `internal:`, `refactor:`, `test:`/`tests:`);
+        #   - skip commits whose every changed path is repo housekeeping (a
+        #     `.md` file or any dotfile/dotdir at the repo root). `PRIVACY.md`
+        #     is the explicit exception.
+        # Qualifying subjects are emitted as a "• "-bulleted list, oldest-first.
+        # If no commit qualifies, sets RELEASE_NOTES_SKIP=true and the
+        # distribution + upload steps skip. A manual workflow_dispatch never
+        # skips — it falls back to a generic note.
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ] \
+             || ! git rev-parse --quiet --verify "$BEFORE_SHA^{commit}" >/dev/null; then
+            shas=$(git log -1 --format=%H "$AFTER_SHA")
+          else
+            shas=$(git log --reverse --no-merges --format=%H "$BEFORE_SHA..$AFTER_SHA")
+          fi
+
+          subjects=()
+          while IFS= read -r sha; do
+            [ -z "$sha" ] && continue
+            s=$(git log -1 --format=%s "$sha")
+            case "$s" in
+              ci:*)       continue ;;
+              docs:*)     continue ;;
+              internal:*) continue ;;
+              refactor:*) continue ;;
+              test:*)     continue ;;
+              tests:*)    continue ;;
+            esac
+            relevant=false
+            while IFS= read -r f; do
+              [ -z "$f" ] && continue
+              case "$f" in
+                PRIVACY.md) relevant=true; break ;;
+                .*)         ;;
+                *.md)       ;;
+                *)          relevant=true; break ;;
+              esac
+            done < <(git diff-tree --no-commit-id --name-only -r "$sha")
+            if [ "$relevant" = "false" ]; then
+              continue
+            fi
+            subjects+=("$s")
+          done <<< "$shas"
+
+          if [ "${#subjects[@]}" -eq 0 ]; then
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              echo "No release-worthy commits, but this is a manual workflow_dispatch — publishing the current tip anyway with a generic note."
+              subjects+=("Internal test build")
+            else
+              echo "No release-worthy commits in this push; skipping Firebase distribution and Play upload."
+              echo "RELEASE_NOTES_SKIP=true" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          fi
+
+          MAX=500
+          TRUNC_MARK=$'\n…'
+          export LC_ALL=C.UTF-8
+
+          format_notes() {
+            local first=1
+            for s in "$@"; do
+              if [ "$first" -eq 1 ]; then
+                printf '%s' "• $s"
+                first=0
+              else
+                printf '\n• %s' "$s"
+              fi
+            done
+          }
+
+          char_len() {
+            printf '%s' "$1" | wc -m
+          }
+
+          kept=()
+          truncated=false
+          for s in "${subjects[@]}"; do
+            candidate=$(format_notes "${kept[@]}" "$s")
+            if [ "$(char_len "$candidate")" -gt "$MAX" ]; then
+              truncated=true
+              break
+            fi
+            kept+=("$s")
+          done
+
+          if [ "${#kept[@]}" -eq 0 ]; then
+            notes=$(printf '%s' "• ${subjects[0]}" | cut -c 1-499)
+            notes="${notes}…"
+          else
+            notes=$(format_notes "${kept[@]}")
+            if [ "$truncated" = true ]; then
+              while [ "$(char_len "${notes}${TRUNC_MARK}")" -gt "$MAX" ] \
+                && [ "${#kept[@]}" -gt 0 ]; do
+                unset 'kept[${#kept[@]}-1]'
+                notes=$(format_notes "${kept[@]}")
+              done
+              if [ "${#kept[@]}" -eq 0 ]; then
+                notes=$(printf '%s' "• ${subjects[0]}" | cut -c 1-498)
+              fi
+              notes="${notes}${TRUNC_MARK}"
+            fi
+          fi
+
+          delim="RELEASE_NOTES_EOF_$(openssl rand -hex 16)"
+          {
+            printf 'RELEASE_NOTES<<%s\n' "$delim"
+            printf '%s\n' "$notes"
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_ENV"
+
+      - name: Distribute via Firebase App Distribution
+        # Skipped when secrets aren't set (fresh repo / fork) or when the
+        # preceding step set RELEASE_NOTES_SKIP=true.
+        if: |
+          success() &&
+          env.FIREBASE_APP_ID != '' &&
+          env.FIREBASE_SERVICE_ACCOUNT_JSON != '' &&
+          env.RELEASE_NOTES_SKIP != 'true'
+        env:
+          FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        uses: wzieba/Firebase-Distribution-Github-Action@bd494989dd4bec0343f78adee87fe66e48279ad6  # v1.7.1
+        with:
+          appId: ${{ secrets.FIREBASE_APP_ID }}
+          serviceCredentialsFileContent: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          # Tester group must exist in Firebase App Distribution console — see
+          # docs/firebase-app-distribution.md.
+          groups: testers
+          file: app/build/outputs/apk/debug/app-debug.apk
+          releaseNotes: |
+            ${{ env.RELEASE_NOTES }}
+            ---
+            Build: ${{ github.run_number }} · ${{ github.sha }}
+
+      - name: Materialize release keystore
+        if: env.RELEASE_KEYSTORE_BASE64 != ''
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "${RELEASE_KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/release.keystore"
+          echo "RELEASE_KEYSTORE_FILE=${RUNNER_TEMP}/release.keystore" >> "${GITHUB_ENV}"
+
+      - name: Build release AAB
+        if: env.RELEASE_KEYSTORE_FILE != ''
+        env:
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+        run: ./gradlew bundleRelease
+
+      - name: Upload signed AAB as workflow artifact
+        if: env.RELEASE_KEYSTORE_FILE != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: app-release-aab
+          path: app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Compose Play Store release notes
+        if: |
+          env.RELEASE_KEYSTORE_FILE != '' &&
+          env.PLAY_SERVICE_ACCOUNT_JSON != '' &&
+          env.RELEASE_NOTES_SKIP != 'true'
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/whatsnew"
+          printf '%s' "${RELEASE_NOTES}" \
+            > "${RUNNER_TEMP}/whatsnew/whatsnew-en-US"
+          echo "PLAY_WHATSNEW_DIR=${RUNNER_TEMP}/whatsnew" >> "${GITHUB_ENV}"
+
+      - name: Upload to Play Store internal track
+        if: |
+          env.RELEASE_KEYSTORE_FILE != '' &&
+          env.PLAY_SERVICE_ACCOUNT_JSON != '' &&
+          env.RELEASE_NOTES_SKIP != 'true'
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5  # v1.1.5
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: dev.phomo
+          releaseFiles: app/build/outputs/bundle/release/app-release.aab
+          tracks: internal
+          status: completed
+          whatsNewDirectory: ${{ env.PLAY_WHATSNEW_DIR }}
