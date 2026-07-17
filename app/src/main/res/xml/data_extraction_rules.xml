@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+   Phomo lets Android's default cloud backup carry non-sensitive settings, but
+   never the SIP account credentials. The account store (see SPEC.md
+   "Persistence") is written to the reserved sharedpref file below and excluded
+   from both cloud backup and device-to-device transfer so a password can't be
+   silently restored onto another device.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="phomo_account.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="phomo_account.xml" />
+    </device-transfer>
+</data-extraction-rules>

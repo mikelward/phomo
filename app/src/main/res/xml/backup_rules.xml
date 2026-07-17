@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+   Legacy auto-backup rules (API < 31). Exclude the SIP account credentials
+   store from cloud backup so it is never uploaded off-device. On API 31+ the
+   equivalent rules live in data_extraction_rules.xml.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="phomo_account.xml" />
+</full-backup-content>

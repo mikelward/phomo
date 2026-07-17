@@ -1,0 +1,10 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base launch theme. Compose drives the real UI colors (Material 3 with
+         dynamic color); this only styles the window before the first frame and
+         is overridden edge-to-edge at runtime. -->
+    <style name="Theme.Phomo" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/phomo_light_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>
