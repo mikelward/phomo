@@ -78,11 +78,9 @@ val baseVersionName = "1.0"
 val isCiBuild: Boolean = providers.environmentVariable("CI")
     .map { value -> value.equals("true", ignoreCase = true) }
     .getOrElse(false)
-val buildConfiguredAtMillis = System.currentTimeMillis()
 val localBuildBranch = if (isCiBuild) "" else gitBranchName
 val localBuildSha = if (isCiBuild) "" else gitShortSha
 val localBuildDirty = !isCiBuild && isGitWorkingTreeDirty
-val localBuildTimeMillis = if (isCiBuild) 0L else buildConfiguredAtMillis
 
 fun buildConfigString(value: String): String = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
@@ -103,7 +101,6 @@ android {
         buildConfigField("String", "LOCAL_BUILD_BRANCH", buildConfigString(localBuildBranch))
         buildConfigField("String", "LOCAL_BUILD_SHA", buildConfigString(localBuildSha))
         buildConfigField("boolean", "LOCAL_BUILD_DIRTY", localBuildDirty.toString())
-        buildConfigField("long", "LOCAL_BUILD_TIME_MILLIS", "${localBuildTimeMillis}L")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
