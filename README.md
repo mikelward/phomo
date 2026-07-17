@@ -43,5 +43,8 @@ emulator and CI sandbox have no cellular radio, microphone peer, or SIP server.
 
 ## License
 
-To be determined. Note that the Linphone SDK the calling stack builds on is
-GPLv3 (or available under a commercial license), which constrains the options.
+Phomo is licensed under the **GNU General Public License v3.0** — see
+[`LICENSE`](LICENSE). The calling stack is built on the Linphone SDK, which is
+GPLv3 (or available under a separate commercial license from Belledonne
+Communications); distributing Phomo's binary therefore requires GPLv3 unless a
+commercial Linphone license is obtained.
