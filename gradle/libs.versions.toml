@@ -15,6 +15,7 @@ roborazzi = "1.63.0"
 firebaseBom = "34.14.0"
 googleServices = "4.4.2"
 firebaseCrashlyticsGradle = "3.0.7"
+linphone = "5.5.12"
 
 [libraries]
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activity" }
@@ -41,6 +42,9 @@ roborazzi = { group = "io.github.takahirom.roborazzi", name = "roborazzi", versi
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-crashlytics = { group = "com.google.firebase", name = "firebase-crashlytics" }
 firebase-perf = { group = "com.google.firebase", name = "firebase-perf" }
+# Audio-only ("minimal") build of the Linphone SDK — no video codecs/libs,
+# smaller native footprint. Not on Maven Central; see the repo in settings.gradle.kts.
+linphone = { group = "org.linphone.minimal", name = "linphone-sdk-android", version.ref = "linphone" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
