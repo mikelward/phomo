@@ -7,9 +7,10 @@ Android 16+ (`minSdk 34`, `targetSdk 36`) and is built to feel like part of the
 platform, not a separate calling app you have to remember to open.
 
 > **Status.** This spec describes the intended v1 product and architecture. The
-> repository currently contains the project scaffolding and a placeholder home
-> screen; the calling stack described below lands across the implementation
-> milestones in `TODO.md`. Sections that describe not-yet-built behavior say so.
+> repository currently contains the project scaffolding, the encrypted
+> credential store, and the account setup screen the app now opens to; the
+> calling stack described below lands across the implementation milestones in
+> `TODO.md`. Sections that describe not-yet-built behavior say so.
 
 ## Product shape
 
@@ -31,13 +32,15 @@ platform, not a separate calling app you have to remember to open.
   fallback, and call status — not a place the user is expected to live.
 - **Bring-your-own trunk.** Phomo is a client, not a calling plan. The user
   supplies SIP credentials (domain/registrar, username, password, and the
-  outbound proxy / termination URI) for their own provider. The reference
-  configuration is a Twilio SIP trunk, but nothing is Twilio-specific in the
-  protocol.
+  outbound proxy / termination URI) for their own provider, plus an optional
+  display name. The reference configuration is a Twilio SIP trunk, but nothing
+  is Twilio-specific in the protocol.
 - **Caller ID (post-v1).** Presenting the user's existing mobile number as the
   outbound caller ID is desirable but explicitly out of scope for v1; it depends
   on trunk-side configuration (verified caller IDs / `From` handling) rather
-  than client behavior.
+  than client behavior. The optional display name above is separate: it is a
+  cosmetic label for the SIP `From` header, not a number the trunk presents as
+  caller ID, and most trunks may ignore it.
 
 ## Devices and compatibility
 

@@ -4,22 +4,25 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import dev.phomo.ui.PhomoApp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import dev.phomo.sip.EncryptedSipAccountStore
+import dev.phomo.ui.AccountSetupScreen
 import dev.phomo.ui.PhomoTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val buildLabel = BuildProvenance.label(
-            branch = BuildConfig.LOCAL_BUILD_BRANCH,
-            sha = BuildConfig.LOCAL_BUILD_SHA,
-            dirty = BuildConfig.LOCAL_BUILD_DIRTY,
-            versionName = BuildConfig.VERSION_NAME,
-        )
         setContent {
             PhomoTheme {
-                PhomoApp(buildLabel = buildLabel)
+                val viewModel: AccountSetupViewModel = viewModel(
+                    factory = viewModelFactory {
+                        initializer { AccountSetupViewModel(EncryptedSipAccountStore(applicationContext)) }
+                    },
+                )
+                AccountSetupScreen(viewModel)
             }
         }
     }

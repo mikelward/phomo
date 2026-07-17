@@ -46,21 +46,21 @@ class SipAccountValidatorTest {
         val result = SipAccountValidator.validate(username = "  ", domain = "", password = "")
         assertFalse(result.isValid)
         assertNull(result.account)
-        assertEquals("Username is required", result.errors[SipAccountField.Username])
-        assertEquals("Domain is required", result.errors[SipAccountField.Domain])
-        assertEquals("Password is required", result.errors[SipAccountField.Password])
+        assertEquals(SipAccountError.UsernameRequired, result.errors[SipAccountField.Username])
+        assertEquals(SipAccountError.DomainRequired, result.errors[SipAccountField.Domain])
+        assertEquals(SipAccountError.PasswordRequired, result.errors[SipAccountField.Password])
     }
 
     @Test
     fun usernameWithDomain_isRejected() {
         val result = SipAccountValidator.validate("alice@example.com", "example.com", "p")
-        assertEquals("Enter just the username, without the domain", result.errors[SipAccountField.Username])
+        assertEquals(SipAccountError.UsernameHasDomain, result.errors[SipAccountField.Username])
     }
 
     @Test
     fun usernameWithSpace_isRejected() {
         val result = SipAccountValidator.validate("al ice", "example.com", "p")
-        assertEquals("Username can't contain spaces", result.errors[SipAccountField.Username])
+        assertEquals(SipAccountError.UsernameHasSpaces, result.errors[SipAccountField.Username])
     }
 
     @Test
@@ -69,7 +69,7 @@ class SipAccountValidatorTest {
             val result = SipAccountValidator.validate(bad, "example.com", "p")
             assertEquals(
                 "expected '$bad' to be rejected",
-                "Username has characters that can't be used in a SIP address",
+                SipAccountError.UsernameUnsupportedChars,
                 result.errors[SipAccountField.Username],
             )
         }
@@ -140,7 +140,7 @@ class SipAccountValidatorTest {
     fun malformedOutboundProxy_isRejected_butEmptyIsFine() {
         assertTrue(SipAccountValidator.validate("alice", "example.com", "p", outboundProxy = "").isValid)
         val bad = SipAccountValidator.validate("alice", "example.com", "p", outboundProxy = "not a host")
-        assertEquals("Enter a valid host, like proxy.example.com:5061", bad.errors[SipAccountField.OutboundProxy])
+        assertEquals(SipAccountError.OutboundProxyInvalid, bad.errors[SipAccountField.OutboundProxy])
     }
 
     @Test
@@ -152,7 +152,7 @@ class SipAccountValidatorTest {
     @Test
     fun allWhitespacePassword_isRejected() {
         val result = SipAccountValidator.validate("alice", "example.com", "   ")
-        assertEquals("Password is required", result.errors[SipAccountField.Password])
+        assertEquals(SipAccountError.PasswordRequired, result.errors[SipAccountField.Password])
         assertNull(result.account)
     }
 

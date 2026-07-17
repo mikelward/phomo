@@ -38,10 +38,15 @@ class EncryptedSipAccountStore(context: Context) : SipAccountStore {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
         val ciphertext = cipher.doFinal(SipAccountCodec.encode(account).toByteArray(Charsets.UTF_8))
-        prefs().edit()
+        // commit() (synchronous, returns success) rather than apply(): callers run
+        // save() off the main thread, and the UI must not report "saved" until the
+        // credential is durably on disk. apply() returns before the disk write, so
+        // a storage-full or immediately-killed write would be reported as success.
+        val committed = prefs().edit()
             .putString(KEY_IV, encodeBase64(cipher.iv))
             .putString(KEY_DATA, encodeBase64(ciphertext))
-            .apply()
+            .commit()
+        if (!committed) throw IOException("Failed to persist the SIP account")
     }
 
     override fun load(): SipAccount? {
@@ -58,6 +63,9 @@ class EncryptedSipAccountStore(context: Context) : SipAccountStore {
             null
         } catch (_: IllegalArgumentException) {
             // Corrupt Base64 in the stored blob.
+            null
+        } catch (_: IOException) {
+            // Keystore unavailable / unreadable (e.g. KeyStore.load I/O error).
             null
         }
     }
