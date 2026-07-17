@@ -15,6 +15,32 @@
     <!-- Analytics ad-id is never collected; strip the transitively-merged perm. -->
     <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove" />
 
+    <!--
+        The Linphone SDK's AAR manifest-merges a broad calling permission set
+        (RECORD_AUDIO, the FOREGROUND_SERVICE_* family, BLUETOOTH, WAKE_LOCK,
+        VIBRATE, …). Per SPEC.md "Permissions", Phomo declares a permission only
+        alongside the code that uses it — and this dependency-introduction step
+        ships no calling code yet, so every SDK-injected permission is removed
+        here. Each is re-added (drop its `tools:node="remove"` line) in the
+        milestone that introduces the feature needing it: RECORD_AUDIO /
+        MODIFY_AUDIO_SETTINGS / the FOREGROUND_SERVICE_* + WAKE_LOCK / BLUETOOTH
+        set with the in-call audio path (Milestone 3); the WiFi/notification/
+        vibrate permissions are inbound-ringing / discovery features Phomo's
+        outbound-only v1 never uses and stay removed.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" tools:node="remove" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" tools:node="remove" />
+    <uses-permission android:name="android.permission.BLUETOOTH" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" tools:node="remove" />
+    <uses-permission android:name="android.permission.VIBRATE" tools:node="remove" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"

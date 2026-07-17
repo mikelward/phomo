@@ -22,6 +22,15 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // Linphone SDK (liblinphone) is not published to Maven Central; it
+        // ships only from Belledonne's own Maven repository. Scoped to the
+        // org.linphone* groups so nothing else is ever fetched from here.
+        maven {
+            url = uri("https://download.linphone.org/maven_repository")
+            content {
+                includeGroupByRegex("org\\.linphone.*")
+            }
+        }
     }
 }
 
