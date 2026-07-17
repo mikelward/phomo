@@ -1,0 +1,5 @@
+<resources>
+    <color name="phomo_light_background">#FFF7F8FA</color>
+    <color name="phomo_dark_background">#FF101114</color>
+    <color name="ic_launcher_background">#FF1E6FFF</color>
+</resources>
