@@ -214,6 +214,7 @@ dependencies {
     implementation(libs.firebase.crashlytics)
     implementation(libs.firebase.perf)
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.androidx.compose.ui.test.junit4)
     testImplementation(libs.robolectric)
     testImplementation(libs.roborazzi)

@@ -1,3 +1,50 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <string name="app_name">Phomo</string>
+
+    <!-- Account setup screen. English-only for now; translations follow in a
+         separate PR once the copy is approved (see AGENTS.md "Translations").
+         TODO: translate -->
+    <string name="account_setup_title" tools:ignore="MissingTranslation">SIP account</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_subtitle" tools:ignore="MissingTranslation">Enter the credentials for your SIP trunk.</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_username_label" tools:ignore="MissingTranslation">Username</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_domain_label" tools:ignore="MissingTranslation">Domain</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_password_label" tools:ignore="MissingTranslation">Password</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_outbound_proxy_label" tools:ignore="MissingTranslation">Outbound proxy (optional)</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_display_name_label" tools:ignore="MissingTranslation">Display name (optional)</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_transport_label" tools:ignore="MissingTranslation">Transport</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_save_button" tools:ignore="MissingTranslation">Save</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_saved_message" tools:ignore="MissingTranslation">Account saved</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_save_error" tools:ignore="MissingTranslation">Unable to save your account. Please try again.</string>
+
+    <!-- Inline field-validation errors. -->
+    <!-- TODO: translate -->
+    <string name="account_setup_error_username_required" tools:ignore="MissingTranslation">Username is required</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_error_username_spaces" tools:ignore="MissingTranslation">Username can\'t contain spaces</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_error_username_has_domain" tools:ignore="MissingTranslation">Enter just the username, without the domain</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_error_username_unsupported" tools:ignore="MissingTranslation">Username has characters that can\'t be used in a SIP address</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_error_domain_required" tools:ignore="MissingTranslation">Domain is required</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_error_domain_invalid" tools:ignore="MissingTranslation">Enter a valid domain, like example.com</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_error_password_required" tools:ignore="MissingTranslation">Password is required</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_error_proxy_invalid" tools:ignore="MissingTranslation">Enter a valid host, like proxy.example.com:5061</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_password_show" tools:ignore="MissingTranslation">Show password</string>
+    <!-- TODO: translate -->
+    <string name="account_setup_password_hide" tools:ignore="MissingTranslation">Hide password</string>
 </resources>

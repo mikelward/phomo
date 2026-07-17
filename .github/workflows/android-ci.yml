@@ -217,13 +217,13 @@ jobs:
           rm -rf app/src/test/snapshots/images
           mkdir -p app/src/test/snapshots/images
 
-      - name: Run home screen screenshot tests
-        # Records the home surface in light and dark themes so the PR
-        # `roborazzi-screenshots` artifact captures visual changes. Add one
-        # `run:` step per new *ScreenshotTest class — a class not on this
-        # allow-list never records snapshots in CI (see AGENTS.md "Testing
+      - name: Run account setup screenshot tests
+        # Records the account-setup form (empty / filled / with-errors / dark)
+        # so the PR `roborazzi-screenshots` artifact captures visual changes.
+        # Add one `run:` step per new *ScreenshotTest class — a class not on
+        # this allow-list never records snapshots in CI (see AGENTS.md "Testing
         # expectations").
-        run: ./gradlew :app:testDebugUnitTest --tests "dev.phomo.HomeScreenshotTest" -Proborazzi.test.record=true
+        run: ./gradlew :app:testDebugUnitTest --tests "dev.phomo.AccountSetupScreenshotTest" -Proborazzi.test.record=true
 
       - name: Print failing test details
         if: failure()

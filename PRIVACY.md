@@ -17,11 +17,11 @@ it goes. It backs the privacy policy linked from the app's About screen.
 
 ## What Phomo stores on your device
 
-- **SIP account credentials** — the domain/registrar, username, password, and
-  outbound proxy you enter during setup. These are stored **only on your
-  device**, encrypted at rest, and are **excluded from cloud backup and
-  device-to-device transfer** so they are never uploaded off the device by the
-  Android backup system.
+- **SIP account details** — the domain/registrar, username, password, and
+  outbound proxy you enter during setup, plus an optional display name (which
+  may be your own name). These are stored **only on your device**, encrypted at
+  rest, and are **excluded from cloud backup and device-to-device transfer** so
+  they are never uploaded off the device by the Android backup system.
 - **App settings** — your home-country override, theme choice, and whether
   automatic call diversion is enabled. These are ordinary preferences and may be
   included in Android's system backup.

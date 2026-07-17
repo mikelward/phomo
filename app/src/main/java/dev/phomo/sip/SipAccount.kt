@@ -45,9 +45,27 @@ enum class SipTransport { Udp, Tcp, Tls }
 /** The fields a validation error can attach to, so a form can show the message inline. */
 enum class SipAccountField { Username, Domain, Password, OutboundProxy }
 
+/**
+ * A validation failure, independent of how it's worded. The validator stays a
+ * pure, framework-free object, so it emits these codes rather than English
+ * strings; the UI resolves each to a localized `strings.xml` message. Keeping
+ * the copy out of the validator is also what lets the translation workflow find
+ * and localize the error text.
+ */
+enum class SipAccountError {
+    UsernameRequired,
+    UsernameHasSpaces,
+    UsernameHasDomain,
+    UsernameUnsupportedChars,
+    DomainRequired,
+    DomainInvalid,
+    PasswordRequired,
+    OutboundProxyInvalid,
+}
+
 /** Result of validating account-setup input: field errors, and the built [account] when there are none. */
 data class SipAccountValidation(
-    val errors: Map<SipAccountField, String>,
+    val errors: Map<SipAccountField, SipAccountError>,
     val account: SipAccount?,
 ) {
     val isValid: Boolean get() = errors.isEmpty()
@@ -81,18 +99,18 @@ object SipAccountValidator {
         val d = domain.trim()
         val proxy = outboundProxy.trim()
         val name = displayName.trim()
-        val errors = LinkedHashMap<SipAccountField, String>()
+        val errors = LinkedHashMap<SipAccountField, SipAccountError>()
 
         when {
-            u.isEmpty() -> errors[SipAccountField.Username] = "Username is required"
-            u.any { it.isWhitespace() } -> errors[SipAccountField.Username] = "Username can't contain spaces"
-            u.contains('@') -> errors[SipAccountField.Username] = "Enter just the username, without the domain"
-            !SIP_USER.matches(u) -> errors[SipAccountField.Username] = "Username has characters that can't be used in a SIP address"
+            u.isEmpty() -> errors[SipAccountField.Username] = SipAccountError.UsernameRequired
+            u.any { it.isWhitespace() } -> errors[SipAccountField.Username] = SipAccountError.UsernameHasSpaces
+            u.contains('@') -> errors[SipAccountField.Username] = SipAccountError.UsernameHasDomain
+            !SIP_USER.matches(u) -> errors[SipAccountField.Username] = SipAccountError.UsernameUnsupportedChars
         }
 
         when {
-            d.isEmpty() -> errors[SipAccountField.Domain] = "Domain is required"
-            !isValidHostPort(d) -> errors[SipAccountField.Domain] = "Enter a valid domain, like example.com"
+            d.isEmpty() -> errors[SipAccountField.Domain] = SipAccountError.DomainRequired
+            !isValidHostPort(d) -> errors[SipAccountField.Domain] = SipAccountError.DomainInvalid
         }
 
         // Requiredness uses isBlank() so an all-whitespace password is rejected,
@@ -102,10 +120,10 @@ object SipAccountValidator {
         // leading/trailing spaces treats them as significant, but in practice
         // they're more often accidental copy-paste artifacts that cause opaque
         // login failures. Revisit once real trunk credentials are tested on-device.
-        if (password.isBlank()) errors[SipAccountField.Password] = "Password is required"
+        if (password.isBlank()) errors[SipAccountField.Password] = SipAccountError.PasswordRequired
 
         if (proxy.isNotEmpty() && !isValidHostPort(proxy)) {
-            errors[SipAccountField.OutboundProxy] = "Enter a valid host, like proxy.example.com:5061"
+            errors[SipAccountField.OutboundProxy] = SipAccountError.OutboundProxyInvalid
         }
 
         val account = if (errors.isEmpty()) {

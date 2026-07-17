@@ -17,6 +17,7 @@ googleServices = "4.4.2"
 firebaseCrashlyticsGradle = "3.0.7"
 linphone = "5.5.12"
 guava = "33.6.0-android"
+coroutines = "1.9.0"
 
 [libraries]
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activity" }
@@ -40,6 +41,7 @@ androidx-test-core = { group = "androidx.test", name = "core", version.ref = "te
 androidx-uiautomator = { group = "androidx.test.uiautomator", name = "uiautomator", version.ref = "uiautomator" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 roborazzi = { group = "io.github.takahirom.roborazzi", name = "roborazzi", version.ref = "roborazzi" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-crashlytics = { group = "com.google.firebase", name = "firebase-crashlytics" }
 firebase-perf = { group = "com.google.firebase", name = "firebase-perf" }
