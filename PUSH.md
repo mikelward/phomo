@@ -18,15 +18,17 @@ a liblinphone flag; on the provider side it needs one piece of onboarding, since
 a registrar cannot push to our device from `pn-param` alone — it has to hold FCM
 credentials for our Firebase project, or we have to use a project of theirs.
 Whether such a provider exists, and will do that, is unknown and is the single
-most valuable thing to find out — §10 makes that case, and everything else in
+most valuable thing to find out — §11 makes that case, and everything else in
 this document is what to do if the answer is no.
 
-**Where to look.** §5 surveys the options. §6 walks the "just a cloud function"
-idea through an actual call flow and timing budget. §7 covers who could run the
+**Where to look.** §4 answers the practical follow-up — how often the client
+actually has to register, and which events should trigger it. §6 surveys the
+options. §7 walks the "just a cloud function"
+idea through an actual call flow and timing budget. §8 covers who could run the
 always-on part instead of us — CPaaS SDKs, rented push gateways, providers that
 might implement RFC 8599 natively, a self-hosted push gateway, and a hosted
-Asterisk PBX. §8 covers the numbers: what each country asks for, and whether
-becoming a carrier ourselves is ever worth it. §10 lays out the trade-off
+Asterisk PBX. §9 covers the numbers: what each country asks for, and whether
+becoming a carrier ourselves is ever worth it. §11 lays out the trade-off
 frontier — what each option spends, and where the dials are worth turning.
 
 **Nothing here is a hard constraint.** Battery, latency, delivery reliability,
@@ -185,7 +187,91 @@ server we do not currently have.**
 
 ---
 
-## 4. What Twilio gives us (and does not)
+## 4. When does the client actually need to register?
+
+§2 says the device holds no timer of its own. That raises the obvious follow-up:
+what *does* trigger a `REGISTER`, and can it simply be reboot, app start, and
+network change? The answer is better than it looks, and one of those three
+triggers is a trap.
+
+### With push, there is no cadence at all
+
+The reason an always-registered client re-`REGISTER`s every few minutes is not
+really the SIP expiry (§1). It is that a binding is only useful while **the NAT
+mapping it was made over is still open**, and those close in tens of seconds to
+a couple of minutes on mobile networks. That is what forces the treadmill.
+
+**Push dissolves that, because the server no longer needs to reach us over that
+path.** It reaches us out of band via FCM; we then register, which opens a fresh
+mapping; and the `INVITE` arrives down the path we just opened. There is nothing
+to hold open in between, so there is nothing to keep alive.
+
+Concretely, by model:
+
+- **Register-on-demand** (§7's webhook, and the PBX in §8 E) — no binding is
+  held at all. The device registers at call time, exactly as the outbound path
+  already does, and tears down after. Zero registrations between calls.
+- **RFC 8599** (§8 C and D) — a binding is held, but the *server* pushes when it
+  wants a refresh. Still no client-side timer, alarm, or keep-alive.
+
+### What actually needs to stay fresh is the push token, not the binding
+
+This is the reframing that matters. In every push model the server's route to
+the device is the FCM registration token, so **token freshness is the
+correctness surface, and binding freshness is either the server's job or
+irrelevant**. That changes which events are worth acting on:
+
+| Trigger | Register / refresh? | Why |
+|---|---|---|
+| **App start** | **Yes** | Free — the user is already here. The natural place to verify the token, revalidate credentials, and re-establish a binding that lapsed while the phone was off. Also the recovery point (below). |
+| **`onNewToken`** | **Yes** | The token has rotated; a server holding the old one is a phone that has silently stopped ringing (§3). |
+| **Credentials changed** | **Yes** | The user edited the account; the old binding is wrong. |
+| **Reboot** | **No** | FCM tokens survive reboots, so there is nothing to refresh — and apps targeting Android 15+ cannot launch a `phoneCall` foreground service from a `BOOT_COMPLETED` receiver anyway. |
+| **Network change** | **No — and this one is a trap** | See below. |
+
+### Why network change is the wrong trigger
+
+It is the most tempting of the three and the worst of them:
+
+- It needs a `ConnectivityManager` callback that stays registered while the app
+  is idle — precisely the standing background work the battery rule in
+  `AGENTS.md` tells us not to add.
+- Network changes are *frequent*. Every Wi-Fi/cellular handover, every change
+  that moves the device's IP. On a train journey it would fire more often than
+  the fixed timer it was meant to replace, which inverts the whole point.
+- It buys nothing, because **Play services already handles network changes for
+  the FCM socket**, once, on behalf of every app on the device. Re-doing that
+  per-app is the exact work push exists to let us skip.
+
+### Without push, event-driven registration does not work
+
+Worth stating plainly, because it is the version that looks fine in testing. A
+binding is a lease with a server-side expiry — Twilio SIP Domains will not grant
+one shorter than 600s, but it is still finite — and the NAT path dies well
+before the lease does. An app that registers only on reboot, app start and
+network change would therefore be reachable for a minute or two after each of
+those events and unreachable the rest of the time. It would pass a
+place-a-test-call check every time and drop real calls all day.
+
+### The two failure modes this leaves
+
+Both end in "it silently stopped ringing," and both recover only at app start:
+
+- **A force-stopped app receives no FCM messages at all** until the user opens
+  it again. If the user swipes the app away from the task switcher on a device
+  whose OEM treats that as a force-stop, inbound dies with no signal.
+- **A binding dropped after a long power-off** — phone flat over a weekend, or
+  the account unused for longer than the server's retention — leaves nothing for
+  the server to push at.
+
+Neither is fully preventable from inside the app, which is why the visible
+**registration-health indicator** §11 asks for is not optional polish: it is the
+only thing standing between these cases and a user who discovers the problem by
+missing a call.
+
+---
+
+## 5. What Twilio gives us (and does not)
 
 - **Elastic SIP Trunking — what Phomo uses today for outbound — does not
   support `REGISTER` at all.** A trunk delivers inbound traffic to a fixed
@@ -218,7 +304,7 @@ onto a second Twilio product.
 
 ---
 
-## 5. The options
+## 6. The options
 
 ### Option 0 — Stay outbound-only (status quo)
 
@@ -288,11 +374,11 @@ behind it as the PSTN gateway.
   upgrades, monitoring, and a service whose downtime means missed calls. It also
   holds our Firebase service-account key and terminates our SIP credentials.
   At one user that is a small VM and a container rather than "infrastructure" in
-  the usual sense; §7 D prices it more carefully, because the reflex to dismiss
+  the usual sense; §8 D prices it more carefully, because the reflex to dismiss
   it may be stronger than the actual burden deserves.
 - **Privacy:** a new always-listening server that sees all of the user's call
   metadata, plus Google seeing a push per inbound call — and, depending on what
-  the payload carries, *who* is calling and when (§6). `PRIVACY.md` would need
+  the payload carries, *who* is calling and when (§7). `PRIVACY.md` would need
   rewriting.
 - **Verdict:** technically the best of the self-directed options, and the only
   one that is both standards-based and compatible with our existing client. It
@@ -307,7 +393,7 @@ and then **holds its HTTP response open** while the app wakes, registers, and
 pings a `/ready` endpoint — at which point it returns a single `<Dial><Sip>` to
 the SIP Domain endpoint. If the ping never comes, it returns voicemail TwiML
 instead. (The obvious alternative — dial immediately and retry with ringback
-between attempts — is a trap that answers the caller's leg early; §6 explains
+between attempts — is a trap that answers the caller's leg early; §7 explains
 why.)
 
 - **Battery:** as good as Option 2. Idle cost is zero; the device registers only
@@ -336,7 +422,7 @@ why.)
   as "sometimes it just doesn't ring."
 - **Non-standard:** we would be reimplementing the idea of RFC 8599 badly,
   without the held request or the server-driven refresh that make the RFC work.
-- **Walked through in full in §6** — this is the option that looks like "just a
+- **Walked through in full in §7** — this is the option that looks like "just a
   cloud function," so it is worth seeing the actual call flow and timing budget
   before judging it.
 - **Verdict:** the cheapest thing that could actually ship against Twilio as it
@@ -381,7 +467,7 @@ improves outbound calling.
 
 ---
 
-## 6. The TwiML webhook path, in detail
+## 7. The TwiML webhook path, in detail
 
 This is the "we just need a cloud function that turns an incoming call into an
 FCM push" idea. It is the most attractive option on paper because it needs no
@@ -500,11 +586,11 @@ half a second later.
 | Hard ceiling — Twilio's webhook HTTP timeout | ~10–15 s, **not tunable by us** |
 
 Everything hinges on the two unknowns, which are the same two unknowns as
-§10's recommendation. If they total ~2–3 seconds the caller hears normal
+§11's recommendation. If they total ~2–3 seconds the caller hears normal
 ringback and never knows. If they occasionally total 20 seconds, calls go to
 voicemail while the user is holding an unlocked phone, and no amount of
 webhook tuning fixes it — that is the point at which only a held `INVITE`
-(§5 Option 2, or a rented gateway from §7) will do.
+(§6 Option 2, or a rented gateway from §8) will do.
 
 ### What has to be built
 
@@ -541,7 +627,7 @@ general product promise it is not.
 
 ---
 
-## 7. Who can run the always-on part for us
+## 8. Who can run the always-on part for us
 
 Something, somewhere, has to stay reachable and hold the call while the phone
 wakes up. The only real question is who runs it. There are four families, and
@@ -717,7 +803,7 @@ solves a problem none of the others do, and creates one none of the others have.
 an inbound call without answering it. An Asterisk dialplan can emit early media
 with `Progress()`, play real ringback, wait while polling for the device to
 register, and only then `Dial()` the endpoint. **That removes the wake race and
-the early-answer trap of §6 entirely** — the two things that cap the webhook
+the early-answer trap of §7 entirely** — the two things that cap the webhook
 option's reliability. It is the same property that makes RFC 8599 work, obtained
 by owning the box rather than by the protocol.
 
@@ -733,7 +819,7 @@ Kamailio give RFC 8599 out of the box and liblinphone already speaks it**;
 Asterisk gives a PBX and asks us to write the push. The documented best-of-both
 is Flexisip in push-gateway mode *in front of* Asterisk.
 
-**Where it genuinely shines: multi-provider aggregation.** §8 makes it likely
+**Where it genuinely shines: multi-provider aggregation.** §9 makes it likely
 that numbers come from different providers — a UK number from one, a German from
 another, US and Australian from a third, depending on who will sell to us. A PBX
 makes that invisible to the app: **one registration, many trunks**, and
@@ -741,7 +827,7 @@ least-cost routing for outbound as a bonus. No other option on this list does
 that; with a vendor SDK or a direct trunk, every provider is a separate
 integration. Given that the numbers question may well force multiple providers,
 this is a structural advantage, not a nicety. Voicemail, IVR, call recording and
-blocklists also come for free — including the voicemail fallback §6 would
+blocklists also come for free — including the voicemail fallback §7 would
 otherwise have to build.
 
 **The trade-offs, and one is sharper than it first looks:**
@@ -780,21 +866,21 @@ for in exchange:
 |---|---|---|---|
 | **A** — CPaaS SDK (Telnyx, Twilio) | token endpoint + routing webhook | best | SIP itself; vendor lock-in (but one stack, not two) |
 | **B** — rented gateway (Acrobits, Mizu) | nothing | very good | money, a third party in the path, probably their SDK too |
-| **§6** — TwiML webhook + FCM | a function, token store, `/ready` endpoint | fair — loses the wake race sometimes | nothing architecturally |
+| **§7** — TwiML webhook + FCM | a function, token store, `/ready` endpoint | fair — loses the wake race sometimes | nothing architecturally |
 | **C** — native RFC 8599 provider | nothing | best | nothing — if one exists |
 | **D** — own push gateway (Flexisip) | a SIP proxy | best | the "no infrastructure" goal |
 | **E** — hosted Asterisk / FreePBX | a PBX | best — it can hold the call | more ops than D, plus toll-fraud exposure; push is hand-rolled |
 
 The honest summary: **the only options that need nothing of ours all require
 giving up something architectural**, and the only option that preserves the
-architecture completely (§6) is the one that needs a small service and races the
+architecture completely (§7) is the one that needs a small service and races the
 device wake. There is no free square on this board — except possibly C, which is
 why it is worth an email. E buys its way out of the wake race with operational
 ownership, and is the only one that also solves multi-provider numbers.
 
 ---
 
-## 8. Getting the numbers
+## 9. Getting the numbers
 
 The push architecture assumes numbers exist to push about. Sourcing them is a
 separate problem with its own answer, and since the motivating use is UK and
@@ -935,13 +1021,13 @@ way worth recording now.
 
 SMS does not travel over SIP in any practical sense — providers deliver inbound
 messages by **webhook to an HTTPS endpoint**, not to a registered SIP client.
-So inbound SMS *requires* the small server that §6 describes, unconditionally
+So inbound SMS *requires* the small server that §7 describes, unconditionally
 and regardless of which call architecture is chosen. That cuts two ways:
 
-- It **strengthens the webhook option** (§6). If we need a function with a token
+- It **strengthens the webhook option** (§7). If we need a function with a token
   store and an authenticated update endpoint for SMS anyway, then the marginal
   cost of also firing the call push from it is close to zero, and the "it needs
-  a backend" objection to §6 largely evaporates.
+  a backend" objection to §7 largely evaporates.
 - It **weakens the pure-provider options** for the same reason: a native
   RFC 8599 provider or a rented gateway would give us calls with no
   infrastructure, but SMS would still need the webhook — so the no-backend
@@ -957,7 +1043,7 @@ Tracked as a post-v1 item in `TODO.md`; no decision here.
 
 ---
 
-## 9. Comparison
+## 10. Comparison
 
 | | Idle battery | Our infrastructure | Reliability | Standards | Fit with `SPEC.md` |
 |---|---|---|---|---|---|
@@ -969,7 +1055,7 @@ Tracked as a post-v1 item in `TODO.md`; no decision here.
 
 ---
 
-## 10. Is there a way to get everything?
+## 11. Is there a way to get everything?
 
 Everything, for this feature, means all seven of: nothing of ours to run, no
 meaningful cost, no idle battery drain, a phone that rings promptly, a phone
@@ -986,7 +1072,7 @@ feature working as designed.
 
 Two asterisks on "nothing of ours." The provider has to be able to push to our
 device, which means onboarding FCM credentials for our Firebase project or
-lending us theirs (§7 C) — a business process, not a config field. And their
+lending us theirs (§8 C) — a business process, not a config field. And their
 server has to schedule binding-refresh pushes sensibly, since a silent
 high-priority refresh is exactly what Android's downgrade heuristic punishes
 (§2). Both are questions to ask, not reasons to discount the option.
@@ -1008,7 +1094,7 @@ Two caveats on "everything," both worth knowing before chasing it:
   know exist, with the least implementation work of anything on the board. The
   "everything" answer is only strictly better if the seventh item matters.
 - **It assumes calls only.** Add SMS and no option keeps the
-  no-infrastructure property (§8), because inbound messages arrive by webhook
+  no-infrastructure property (§9), because inbound messages arrive by webhook
   rather than to a SIP client.
 
 So the first move is not to choose a trade-off — it is to find out whether one
@@ -1035,14 +1121,14 @@ The dials, and what each option spends:
 | **A** — CPaaS SDK (Telnyx, Twilio) | token endpoint + inbound routing webhook | their SDK — but **one stack, not two** | trunk only | none | best | best | **no** | their catalog |
 | **D** — own push gateway | a small VM | a liblinphone flag | a few €/mo | low, unmeasured | best | best, but our uptime | yes | free choice |
 | **E** — hosted Asterisk / FreePBX | a PBX | the push, in a dialplan | VM + our time | none — no binding held | best — holds the call | best, but our uptime | yes | **many providers at once** |
-| **§6** — TwiML webhook + FCM | a function, token store, `/ready` endpoint | the inbound call path ourselves | ~free | none | fair — wake race | fair — loses some | yes | free choice |
+| **§7** — TwiML webhook + FCM | a function, token store, `/ready` endpoint | the inbound call path ourselves | ~free | none | fair — wake race | fair — loses some | yes | free choice |
 | **1-scoped** — register while charging / on Wi-Fi | nothing | a registration policy | trunk only | moderate, bounded | best when up | reachable only sometimes | yes | free choice |
 | **0** — outbound only | nothing | nothing | none | none | n/a | n/a | yes | n/a |
 
 Reading it across: **A, B, C, and D all give the same excellent latency and
 reliability**, because in every one of them something stays reachable and holds
 the call. They differ only in what they charge for it — money, infrastructure,
-or portability. §6 is the one that is cheap in all three currencies and pays in
+or portability. §7 is the one that is cheap in all three currencies and pays in
 latency and reliability instead.
 
 **On idle battery, note that "none" is not quite free for the options that hold
@@ -1052,14 +1138,14 @@ and completes a `REGISTER` round trip — real CPU and radio, just far less than
 30-second keep-alive, and unmeasured until we know a provider's refresh cadence.
 
 The genuinely zero-idle options are the ones that hold **no binding at all**
-between calls, and there are three: §6's webhook, which registers on demand
+between calls, and there are three: §7's webhook, which registers on demand
 exactly as the outbound path already does; the vendor SDK, whose registration is
 a long-lived address rather than a refreshed lease; and **E as described in
-§7** — the Asterisk dialplan pushes only once an inbound call has arrived and
+§8** — the Asterisk dialplan pushes only once an inbound call has arrived and
 then waits for the device to register, so nothing is bound between calls. E
 could of course be built the other way, with a standing registration to the PBX,
 but that would be a different design with a different battery cost, and it is
-not the one §7 describes.
+not the one §8 describes.
 
 That is a small point in favor of the register-on-demand shapes that the rest of
 this document does not otherwise make. The scoped-registration variant pays in
@@ -1072,28 +1158,28 @@ number is secondary.
 - **If liblinphone is not sacred, family A stops being a second stack.** The
   "two media engines" objection was the main cost of a vendor SDK, and it only
   applies if we keep liblinphone alongside it. WebRTC does bidirectional audio
-  and reaches the PSTN perfectly well (§7 A), its media processing is at least
+  and reaches the PSTN perfectly well (§8 A), its media processing is at least
   as good, and its license is friendlier — so replacing liblinphone outright is
   a real single-stack option. What remains is portability, and that is a product
   question rather than a technical one: how much is "bring your own trunk" worth
   when the user will in practice have exactly one provider? **Family A is the
   option that implements the least ourselves by a wide margin.**
-- **If SMS is ever wanted, everyone needs a backend** (§8). Inbound SMS arrives
+- **If SMS is ever wanted, everyone needs a backend** (§9). Inbound SMS arrives
   by webhook, never to a SIP client, so the no-infrastructure property of B and
-  C does not survive the first text message. That narrows the gap between §6 and
-  the paid options considerably — if a small service exists anyway, §6's
+  C does not survive the first text message. That narrows the gap between §7 and
+  the paid options considerably — if a small service exists anyway, §7's
   marginal cost is close to zero.
 
 - **A third factor: how many providers the numbers force on us.** If the UK,
   German, Australian and US numbers end up at different vendors — quite likely,
-  given §8 — then every option except a PBX (E) means a separate integration per
+  given §9 — then every option except a PBX (E) means a separate integration per
   provider, while E hides all of them behind one registration. That is a
   structural argument that only appears once the numbers question is answered,
   which is another reason to answer it early.
 
 Put together: the ranking depends on how much portability is worth, whether SMS
 is in scope, and how many providers the numbers force. High portability and no
-SMS favors C, then B. Low portability favors A outright. SMS in scope favors §6,
+SMS favors C, then B. Low portability favors A outright. SMS in scope favors §7,
 because the server it needs is a server we would be running regardless. Multiple
 providers favors E, which is also the only self-run option that removes the wake
 race — at the price of being the only one whose failure mode is a fraudulent
@@ -1106,13 +1192,13 @@ phone bill rather than a missed call.
   would tell us, and if it turns out to be small, the simplest design on the
   board becomes viable.
 - **Whether latency even matters at the values we would see.** If the webhook
-  path (§6) rings in 3–4 seconds, that is within normal PSTN setup time and no
+  path (§7) rings in 3–4 seconds, that is within normal PSTN setup time and no
   one notices. The measurement may dissolve the concern rather than confirm it.
 - **Combining rather than choosing.** Scoped registration when it is cheap to be
   registered, push-woken when it is not, is strictly better than either alone
   and costs one more state in the machine.
 - **Which European countries are easy.** Germany looks like the hardest number
-  in Europe to buy as an individual (§8). If the goal is "a European presence"
+  in Europe to buy as an individual (§9). If the goal is "a European presence"
   rather than specifically `+49`, it is worth checking what a Netherlands,
   Irish, or Austrian number costs in paperwork before accepting Germany's.
 - **Whether the UK and German numbers even need the same architecture.** They do
@@ -1131,17 +1217,17 @@ device. When it does start:
    the provider list independently.
 3. Measure the two unknowns — FCM delivery latency to a Dozing device and
    wake-to-registered time — on a real Pixel and a real Samsung, on mobile data.
-   That tells us whether §6 is indistinguishable from the paid options or
+   That tells us whether §7 is indistinguishable from the paid options or
    meaningfully worse.
 4. Whatever is chosen, note that latency and delivery are separate measurements.
    Wake-to-registered only measures the pushes that *arrive*; priority
-   downgrade (§3), token rotation (§3), and OEM deferral (§12) each fail as "the
+   downgrade (§3), token rotation (§3), and OEM deferral (§13) each fail as "the
    phone never rang" and need their own observation over weeks. A visible
    registration-health indicator is worth building either way, so a silently
    dead push path is something the user can see rather than discover by missing
    a call.
 
-## 11. What would have to change if we adopt any of these
+## 12. What would have to change if we adopt any of these
 
 - `SPEC.md` — "Product shape" (outbound-only is a load-bearing claim),
   "Registration lifecycle" (the battery model gains a push-woken path), and
@@ -1155,7 +1241,7 @@ device. When it does start:
   should therefore never make inbound calling appear unavailable because the
   permission was denied. It is still needed for anything *outside* that
   exemption: missed-call notifications, and the registration-health indicator
-  §10 asks for.
+  §11 asks for.
 - `PRIVACY.md` — Google receives a push per inbound call; Options 2 and 3 add a
   server of ours that holds a Firebase service-account key.
 - The manifest gains a `FirebaseMessagingService`, and the app gains a Firebase
@@ -1169,18 +1255,18 @@ device. When it does start:
   all need to be unit-testable in the same pure-logic style as
   `SipCallMachine`.
 
-## 12. Open questions
+## 13. Open questions
 
 Ordered by how much each one would change the plan.
 
 - **Would a provider hold FCM credentials for our Firebase project, or make us
-  use theirs?** (§7 C) This decides whether families B and C are actually
+  use theirs?** (§8 C) This decides whether families B and C are actually
   reachable, and the second answer costs us the portability that made them
   attractive.
 - **How does a candidate provider schedule binding-refresh pushes?** (§2) A
   naive high-priority silent refresh would degrade the call pushes we care
   about.
-- **Can we actually get the numbers, and from whom?** (§8) The
+- **Can we actually get the numbers, and from whom?** (§9) The
   legal answer decides the provider, which constrains everything else. German
   local numbers appear to be closed to individuals at the major CPaaS providers.
 - **Does any PSTN trunk provider implement RFC 8599 for third-party clients?**
@@ -1189,7 +1275,7 @@ Ordered by how much each one would change the plan.
   liblinphone-based client rather than their SDK? A yes gives us the RFC 8599
   architecture with zero operations.
 - **Wake-to-registered latency**, and FCM delivery latency to a Dozing device,
-  on Pixel and Samsung, on mobile data and Wi-Fi. Everything in §6 hinges on
+  on Pixel and Samsung, on mobile data and Wi-Fi. Everything in §7 hinges on
   this and it cannot be measured in the sandbox.
 - How aggressively does the FCM priority-downgrade heuristic bite for an app
   with very low call volume — does a phone that receives two calls a week keep
@@ -1204,7 +1290,7 @@ Ordered by how much each one would change the plan.
 - What does a rented gateway actually cost per month at one user? Neither
   Acrobits nor Belledonne publishes pricing.
 
-## 13. Verification status
+## 14. Verification status
 
 Nothing in this document has been verified against a live call, and no code
 changed. It is a literature and API review: RFC 8599, the Android FCM /
@@ -1215,7 +1301,7 @@ Acrobits' SIPIS documentation, and Flexisip's push-gateway documentation.
 The sandbox has no radio, no microphone, and no SIP peer, so the two
 load-bearing numbers — FCM delivery latency and wake-to-registered time — are
 unmeasured, and every reliability claim above is an inference from
-documentation rather than an observation. The regulatory summaries in §8 are
+documentation rather than an observation. The regulatory summaries in §9 are
 read from provider documentation and are a starting point for asking, not legal
 advice; number eligibility is exactly the kind of thing that changes and that
 providers assess case by case.
@@ -1246,7 +1332,7 @@ providers assess case by case.
 - [Push notifications — Linphone SDK wiki](https://wiki.linphone.org/xwiki/wiki/public/view/Lib/Features/Push%20notifications/)
 - [SIP Push Notification with OpenSIPS 3.1 LTS (RFC 8599 support)](https://blog.opensips.org/2020/06/03/sip-push-notification-with-opensips-3-1-lts-rfc-8599-supportpart-ii/)
 
-Providers and hosted infrastructure (§7):
+Providers and hosted infrastructure (§8):
 
 - [Notification quickstart for Android — Telnyx](https://developers.telnyx.com/docs/voice/webrtc/android-sdk/push-notification/quickstart)
 - [telnyx-webrtc-android — GitHub](https://github.com/team-telnyx/telnyx-webrtc-android)
@@ -1255,7 +1341,7 @@ Providers and hosted infrastructure (§7):
 - [Acrobits SIP Mobile SDK](https://doc.acrobits.net/sdk/)
 - [VoIP Push Notifications Gateway — Mizu](https://www.mizu-voip.com/Software/VoIPPushGateway.aspx)
 
-Numbers and regulatory (§8):
+Numbers and regulatory (§9):
 
 - [Germany: regulatory guidelines — Twilio](https://www.twilio.com/en-us/guidelines/de/regulatory)
 - [United Kingdom: regulatory guidelines — Twilio](https://www.twilio.com/en-us/guidelines/gb/regulatory)
