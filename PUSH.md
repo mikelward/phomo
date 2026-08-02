@@ -39,8 +39,18 @@ tests to pass, and the right amount to spend on each depends on whether this is
 a secondary number backed by voicemail or a replacement for the SIM. Where this
 document sounds decisive, read it as an argument, not a rule.
 
-This document is exploration, not a decision. Inbound calling is post-v1 (see
-`SPEC.md` → "Product shape" and `TODO.md` → "Post-v1"); nothing here changes v1.
+**SIP is not the goal — the functionality is.** This is a **v2 exploration**,
+and in v2 the SIP premise is itself up for grabs. Most of this document asks
+"how do we wake a *SIP* client," but that question only exists because of a
+route, not because of the product. If Phomo instead builds on a vendor WebRTC
+SDK, the provider owns inbound push, there is no registration lifecycle at all,
+and §§2, 4, 7 and most of §8 stop applying. **Option 6 in §6 treats that route as
+a first-class option rather than a concession**, and §12 says what survives
+either way. Read the SIP analysis as "if we stay on SIP," not as a premise.
+
+This document is exploration, not a decision, and it does not change v1. `SPEC.md`
+describes the shipping v1 product — outbound-only over SIP — and nothing here
+amends it.
 
 ---
 
@@ -498,6 +508,52 @@ registers on demand at the moment the user taps Call, and pre-warming
 registration with a speculative push would both burn the high-priority budget
 (§3) and reintroduce idle work. There is no version of "urgent push" that
 improves outbound calling.
+
+### Option 6 — Drop SIP entirely and build on a vendor SDK
+
+Listed last because it is the largest, but it is not a concession — on the
+functionality Phomo actually wants, it is arguably the shortest path. Use one
+vendor's WebRTC SDK (Twilio's or Telnyx's) for **both** legs: outbound *and*
+inbound, replacing liblinphone rather than sitting beside it.
+
+**What this dissolves.** Nearly all of this document. There is no `REGISTER`, no
+binding, no expiry, no NAT keep-alive, no push gateway, no RFC 8599, no wake
+race, no `/ready` endpoint, no registration-health indicator. The provider sends
+the push, holds the call while the device wakes, and hands the app a ringing
+call object. §§2, 4, 7 and most of §8 are answers to questions this route does
+not ask.
+
+**What it costs.**
+
+- **Portability becomes a rewrite, not a credentials edit.** With SIP, changing
+  provider is a settings change; with an SDK it is the calling layer. Whether
+  that matters depends on how likely a switch really is for a single user with
+  one account — but it is a genuine, permanent cost, and it should be accepted
+  deliberately rather than discovered later.
+- **One vendor's Android audio stack owns call quality** — echo cancellation,
+  routing, Bluetooth, Telecom integration. That is the hardest thing to evaluate
+  before placing real calls and the least affordable to get wrong.
+- **It still is not backend-free.** An access-token endpoint and an inbound
+  routing webhook are both required (§6 Option 4), and SMS would still need the
+  webhook of §9.
+
+**What it does not cost.** Media quality or PSTN reach — §8 A establishes that
+WebRTC is full-duplex by design, routinely bridged to the PSTN, and carries
+Opus, the 3A chain, NetEQ, FEC and mandatory ICE, under a BSD license rather
+than GPLv3. On the things `AGENTS.md` actually cares about — a call that
+connects, sounds clean both ways, and ends cleanly — this route is not a
+compromise.
+
+**The timing argument.** The `sip/` package is a few hundred lines of pure
+Kotlin with **no liblinphone binding written yet** — the dependency is declared
+but nothing calls it. So the sunk cost in SIP today is close to zero, and this
+is the cheapest moment this decision will ever be. Once the binding, audio
+routing and Telecom integration exist against SIP, it stops being cheap.
+
+**Verdict:** the right route if provider portability turns out to be worth less
+than it sounds, which for one user with one provider it may well be. The way to
+decide is not more analysis — it is to place one real call on each SDK and
+listen.
 
 ---
 
@@ -1092,6 +1148,21 @@ from mid-2026 secondary sources. They are good enough to shape a shortlist and
 not good enough to sign a contract on. Verify against the vendors' own rate
 sheets before committing.
 
+**And read the percentages as absolute money.** Vendor comparisons quote ratios
+because ratios flatter: "60% cheaper" is transformative at 100,000 minutes a
+month and close to meaningless at personal-use volume. A few hundred
+international minutes a month puts the gap between these two providers at
+roughly the price of a coffee — less than the Play Console fee amortized over a
+year. **Whatever else decides this, price probably should not**, unless usage
+turns out to be far higher than a single user's.
+
+**A second pricing trap, specific to the SDK route.** The rows below compare
+*trunk* rates. SDK-originated calls are frequently priced on a different card
+(Twilio Client-to-PSTN and Elastic SIP Trunking are separate products with
+separate rates), so if Phomo goes the way of §6 Option 6, none of the per-minute
+figures here are the ones that would actually be billed. Re-price against the
+SDK rate card before drawing any conclusion from them.
+
 | Dimension | Twilio | Telnyx | Edge |
 |---|---|---|---|
 | **US outbound / min** | ~$0.014 Programmable Voice; ~$0.013 elastic trunk | ~$0.005–0.007 blended | **Telnyx**, roughly half |
@@ -1126,11 +1197,15 @@ choice is nearly reversible. It does **not** rescue the SDK layer — Twilio's
 Voice SDK and Telnyx's WebRTC SDK are entirely different clients, and that is
 where the lock-in in §8 A actually lives.
 
-**3. Telnyx's SDK fits our architecture better, for a reason unrelated to
-price.** It authenticates with **ordinary SIP credentials**, so a single account
+**3. Telnyx's SDK fits a *hybrid* architecture better — but only a hybrid
+one.** It authenticates with **ordinary SIP credentials**, so a single account
 and one credential set could cover both the trunk (outbound, liblinphone today)
 and the push-woken SDK path (inbound). Twilio's Voice SDK uses a separate
 identity + Push Credential model that does not line up with a SIP domain at all.
+**This argument evaporates if SIP is dropped entirely** (§6 Option 6): with no
+trunk to unify with, "SIP credentials" is just a login form, and the two vendors
+are equivalent on this dimension. It is the single most conditional point in
+this section, and it was previously stated as though it applied unconditionally.
 Its SDK also exposes call-quality metrics, which matter against `AGENTS.md`'s
 call-quality bar — though **this is not a Telnyx advantage**, and an earlier
 draft of this section wrongly implied it was. Twilio's Voice SDK offers the same
@@ -1156,21 +1231,35 @@ the number catalog ever needs somewhere unusual.
 
 ### Verdict
 
-**Telnyx looks like the better technical and economic fit** — cheaper,
-SIP-credential-based SDK, free support, TwiML-compatible markup — with Twilio's
-ecosystem *and its call-quality telemetry* as the things given up. But treat that as a
-hypothesis rather than a conclusion until two things are checked, either of
-which could overturn it:
+**The answer depends on whether Phomo stays on SIP.**
 
-1. **The per-destination rates** for the countries actually called.
+- **If it does** (a SIP trunk for outbound, a push path for inbound), Telnyx
+  looks like the better fit: cheaper, SIP credentials that unify both legs, free
+  support, TwiML-compatible markup — against Twilio's ecosystem and call-quality
+  telemetry.
+- **If it does not** (§6 Option 6, one vendor SDK for everything), the case
+  narrows sharply. The SIP-credentials argument disappears, the price advantage
+  is small in absolute terms at one user's volume, and what remains is Telnyx's
+  owned network and free support against Twilio's deeper ecosystem, better
+  telemetry and longer operating history. **On that reading it is close to a
+  toss-up, and arguably leans Twilio.**
+
+Either way, treat it as a hypothesis rather than a conclusion. Three things
+could overturn it, and none of them is more analysis:
+
+1. **The per-destination rates** for the countries actually called — on the
+   *right* rate card, trunk or SDK, per the trap noted above.
 2. **Whether either will sell the numbers** in §9, given the address situation.
    Number eligibility could decide this before any technical dimension does.
+3. **How each SDK actually sounds** on a real device. Both quickstarts are small;
+   one real call on each would settle more than this section can, and audio
+   quality is the dimension least visible from documentation.
 
-Note also that this choice is less binding than it looks. Outbound today is
-plain SIP against an elastic trunk, which either provider serves and which is a
-configuration change to move; TeXML compatibility makes the webhook portable
-too. The genuinely sticky decision is the SDK, and only if we go down the
-family-A path in §8.
+How binding the choice is depends on the route. On the SIP route it is barely
+binding at all — outbound is plain SIP against an elastic trunk that either
+provider serves, and TeXML compatibility makes the webhook portable too. On the
+Option 6 route it is the most binding decision in the project, because the
+calling layer is written against one vendor's SDK.
 
 ---
 
@@ -1192,6 +1281,14 @@ Everything, for this feature, means all seven of: nothing of ours to run, no
 meaningful cost, no idle battery drain, a phone that rings promptly, a phone
 that rings *every* time, still a standard SIP app with one media stack, and UK
 and German numbers we can actually buy.
+
+**The sixth item is a want, not a requirement** — and that changes the answer
+more than anything else in this document. If "still a SIP app" is dropped, as
+§6 Option 6 argues it reasonably can be, then a vendor SDK already delivers the
+other six *today*, from vendors known to exist, with less to build than any
+other route here. The hunt below for a provider that gives all seven is only
+worth running if portability is worth something. If it is not, the answer is
+already available and the rest of this section is moot.
 
 **Yes — one shape gets all seven, and it is family C: a PSTN provider whose own
 registrar implements RFC 8599.** Then liblinphone's existing push support does
