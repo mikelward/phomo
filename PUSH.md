@@ -18,7 +18,7 @@ a liblinphone flag; on the provider side it needs one piece of onboarding, since
 a registrar cannot push to our device from `pn-param` alone — it has to hold FCM
 credentials for our Firebase project, or we have to use a project of theirs.
 Whether such a provider exists, and will do that, is unknown and is the single
-most valuable thing to find out — §11 makes that case, and everything else in
+most valuable thing to find out — §12 makes that case, and everything else in
 this document is what to do if the answer is no.
 
 **Where to look.** §4 answers the practical follow-up — how often the client
@@ -28,8 +28,10 @@ idea through an actual call flow and timing budget. §8 covers who could run the
 always-on part instead of us — CPaaS SDKs, rented push gateways, providers that
 might implement RFC 8599 natively, a self-hosted push gateway, and a hosted
 Asterisk PBX. §9 covers the numbers: what each country asks for, and whether
-becoming a carrier ourselves is ever worth it. §11 lays out the trade-off
-frontier — what each option spends, and where the dials are worth turning.
+becoming a carrier ourselves is ever worth it. §10 compares Twilio and Telnyx
+dimension by dimension, since the provider choice constrains most of the rest.
+§12 lays out the trade-off frontier — what each option spends, and where the
+dials are worth turning.
 
 **Nothing here is a hard constraint.** Battery, latency, delivery reliability,
 infrastructure, cost, and number availability are all quantities to spend, not
@@ -265,7 +267,7 @@ Both end in "it silently stopped ringing," and both recover only at app start:
   the server to push at.
 
 Neither is fully preventable from inside the app, which is why the visible
-**registration-health indicator** §11 asks for is not optional polish: it is the
+**registration-health indicator** §12 asks for is not optional polish: it is the
 only thing standing between these cases and a user who discovers the problem by
 missing a call.
 
@@ -586,7 +588,7 @@ half a second later.
 | Hard ceiling — Twilio's webhook HTTP timeout | ~10–15 s, **not tunable by us** |
 
 Everything hinges on the two unknowns, which are the same two unknowns as
-§11's recommendation. If they total ~2–3 seconds the caller hears normal
+§12's recommendation. If they total ~2–3 seconds the caller hears normal
 ringback and never knows. If they occasionally total 20 seconds, calls go to
 voicemail while the user is holding an unlocked phone, and no amount of
 webhook tuning fixes it — that is the point at which only a held `INVITE`
@@ -1043,7 +1045,99 @@ Tracked as a post-v1 item in `TODO.md`; no decision here.
 
 ---
 
-## 10. Comparison
+## 10. Twilio and Telnyx, dimension by dimension
+
+Both providers appear throughout the sections above — Twilio for what its SIP
+products do and do not do (§5), Telnyx as the most interesting of the CPaaS SDKs
+(§8 A), and both for numbers (§9). This section pulls the comparison together,
+because if inbound gets built the choice of provider constrains almost
+everything else.
+
+**Read the figures with suspicion.** Almost all published Twilio-vs-Telnyx
+material is either written by Telnyx or is affiliate SEO content, and neither
+vendor's pricing page was reachable from the sandbox, so the numbers below come
+from mid-2026 secondary sources. They are good enough to shape a shortlist and
+not good enough to sign a contract on. Verify against the vendors' own rate
+sheets before committing.
+
+| Dimension | Twilio | Telnyx | Edge |
+|---|---|---|---|
+| **US outbound / min** | ~$0.014 Programmable Voice; ~$0.013 elastic trunk | ~$0.005–0.007 blended | **Telnyx**, roughly half |
+| **US inbound / min** | ~$0.0085; ~$0.0015 trunk | ~$0.001–0.0035 | Telnyx |
+| **Network** | Resells carrier capacity (largely Bandwidth in the US) with an API layer on top | Owns a private global IP network; licensed carrier in many markets | **Telnyx**, structurally |
+| **Latency** | Public-internet hops between components; more variance | Claims sub-100 ms p95 SIP latency on its own backbone | Telnyx — *vendor-sourced claim* |
+| **Call quality** | Opus / G.711 / G.722 | Same codecs, plus codec-preference ordering and **MOS/jitter metrics exposed in the SDK** | Telnyx, slightly |
+| **Operating history** | Enormous scale, long public status record | Fewer public incidents but far less history at scale | **Twilio** |
+| **Number coverage** | 100+ countries; better for the exotic (Brazil, UAE, Singapore toll-free) | 140+ claimed; strongest in US/CA/UK/AU/DE/FR/NL | Twilio for breadth; a tie for the four countries in §9 |
+| **Android SDK** | Voice SDK: identity + Push Credential, FCM | WebRTC SDK: **SIP credentials**, FCM, 5 push tokens/user, hold/mute, ringback, trickle ICE, codec preference, call-quality metrics | Telnyx |
+| **Markup** | TwiML | **TeXML — deliberately TwiML-compatible** | Telnyx |
+| **Voicemail** | No built-in product; `<Record>` + TwiML Bins | No built-in product; `<Record>` + TeXML Bins, with a documented voicemail recipe | Tie |
+| **Support** | Paid tiers | Free 24/7, in-house telecom specialists | **Telnyx**, and it matters here |
+| **Ecosystem / docs** | Largest by a wide margin | Smaller community, thinner third-party material | **Twilio** |
+
+### The four that actually decide it for Phomo
+
+**1. The US per-minute comparison is nearly irrelevant to us.** Every published
+benchmark quotes US rates, but Phomo exists to call *overseas*. The bill is set
+by the per-destination termination rate to the specific countries the user
+calls, and those vary enormously by destination and do not track the US headline
+at all. "Telnyx is 60% cheaper on US outbound" says almost nothing about the
+rate to a UK mobile. **Pull the actual rate sheets for the top five
+destinations** and compare those; treat everything else in the pricing rows
+above as noise.
+
+**2. TeXML changes the lock-in calculus — but only halfway.** Telnyx's TeXML is
+deliberately TwiML-compatible, to the point that existing TwiML is claimed to
+run unmodified. That matters directly for §7: the cloud function we would write
+is close to portable between the two, so at the *markup* layer the provider
+choice is nearly reversible. It does **not** rescue the SDK layer — Twilio's
+Voice SDK and Telnyx's WebRTC SDK are entirely different clients, and that is
+where the lock-in in §8 A actually lives.
+
+**3. Telnyx's SDK fits our architecture better, for a reason unrelated to
+price.** It authenticates with **ordinary SIP credentials**, so a single account
+and one credential set could cover both the trunk (outbound, liblinphone today)
+and the push-woken SDK path (inbound). Twilio's Voice SDK uses a separate
+identity + Push Credential model that does not line up with a SIP domain at all.
+The MOS and jitter metrics its SDK exposes are also directly useful against
+`AGENTS.md`'s call-quality bar — without them we would be guessing at audio
+quality rather than measuring it.
+
+**4. Free 24/7 support is worth more to this project than to a company.** Phomo
+has one developer and no ops. When a call fails at 11pm on a real device against
+a real trunk — the exact class of problem this whole document defers to
+on-device testing — Twilio's answer is a support tier you pay for. That
+asymmetry favors Telnyx more than the pricing does.
+
+### Where Twilio still wins
+
+Operating history and ecosystem depth. When something breaks at 2am, the odds
+that someone has already written up the exact symptom are much higher with
+Twilio, and for a project whose hardest problems will be device- and
+carrier-specific that is not a small thing. Twilio is also the safer choice if
+the number catalog ever needs somewhere unusual.
+
+### Verdict
+
+**Telnyx looks like the better technical and economic fit** — cheaper,
+SIP-credential-based SDK, quality metrics, free support, TwiML-compatible
+markup — with Twilio's ecosystem as the main thing given up. But treat that as a
+hypothesis rather than a conclusion until two things are checked, either of
+which could overturn it:
+
+1. **The per-destination rates** for the countries actually called.
+2. **Whether either will sell the numbers** in §9, given the address situation.
+   Number eligibility could decide this before any technical dimension does.
+
+Note also that this choice is less binding than it looks. Outbound today is
+plain SIP against an elastic trunk, which either provider serves and which is a
+configuration change to move; TeXML compatibility makes the webhook portable
+too. The genuinely sticky decision is the SDK, and only if we go down the
+family-A path in §8.
+
+---
+
+## 11. Comparison
 
 | | Idle battery | Our infrastructure | Reliability | Standards | Fit with `SPEC.md` |
 |---|---|---|---|---|---|
@@ -1055,7 +1149,7 @@ Tracked as a post-v1 item in `TODO.md`; no decision here.
 
 ---
 
-## 11. Is there a way to get everything?
+## 12. Is there a way to get everything?
 
 Everything, for this feature, means all seven of: nothing of ours to run, no
 meaningful cost, no idle battery drain, a phone that rings promptly, a phone
@@ -1221,13 +1315,13 @@ device. When it does start:
    meaningfully worse.
 4. Whatever is chosen, note that latency and delivery are separate measurements.
    Wake-to-registered only measures the pushes that *arrive*; priority
-   downgrade (§3), token rotation (§3), and OEM deferral (§13) each fail as "the
+   downgrade (§3), token rotation (§3), and OEM deferral (§14) each fail as "the
    phone never rang" and need their own observation over weeks. A visible
    registration-health indicator is worth building either way, so a silently
    dead push path is something the user can see rather than discover by missing
    a call.
 
-## 12. What would have to change if we adopt any of these
+## 13. What would have to change if we adopt any of these
 
 - `SPEC.md` — "Product shape" (outbound-only is a load-bearing claim),
   "Registration lifecycle" (the battery model gains a push-woken path), and
@@ -1241,7 +1335,7 @@ device. When it does start:
   should therefore never make inbound calling appear unavailable because the
   permission was denied. It is still needed for anything *outside* that
   exemption: missed-call notifications, and the registration-health indicator
-  §11 asks for.
+  §12 asks for.
 - `PRIVACY.md` — Google receives a push per inbound call; Options 2 and 3 add a
   server of ours that holds a Firebase service-account key.
 - The manifest gains a `FirebaseMessagingService`, and the app gains a Firebase
@@ -1255,7 +1349,7 @@ device. When it does start:
   all need to be unit-testable in the same pure-logic style as
   `SipCallMachine`.
 
-## 13. Open questions
+## 14. Open questions
 
 Ordered by how much each one would change the plan.
 
@@ -1266,6 +1360,9 @@ Ordered by how much each one would change the plan.
 - **How does a candidate provider schedule binding-refresh pushes?** (§2) A
   naive high-priority silent refresh would degrade the call pushes we care
   about.
+- **What are the per-destination termination rates** to the countries actually
+  called, at each candidate provider? (§10) Every published comparison quotes US
+  rates, which are close to irrelevant for an app that exists to call overseas.
 - **Can we actually get the numbers, and from whom?** (§9) The
   legal answer decides the provider, which constrains everything else. German
   local numbers appear to be closed to individuals at the major CPaaS providers.
@@ -1290,7 +1387,7 @@ Ordered by how much each one would change the plan.
 - What does a rented gateway actually cost per month at one user? Neither
   Acrobits nor Belledonne publishes pricing.
 
-## 14. Verification status
+## 15. Verification status
 
 Nothing in this document has been verified against a live call, and no code
 changed. It is a literature and API review: RFC 8599, the Android FCM /
@@ -1331,6 +1428,18 @@ providers assess case by case.
 - [Regulatory requirements — DIDWW](https://www.didww.com/resources/regulatory-requirements)
 - [Push notifications — Linphone SDK wiki](https://wiki.linphone.org/xwiki/wiki/public/view/Lib/Features/Push%20notifications/)
 - [SIP Push Notification with OpenSIPS 3.1 LTS (RFC 8599 support)](https://blog.opensips.org/2020/06/03/sip-push-notification-with-opensips-3-1-lts-rfc-8599-supportpart-ii/)
+
+Provider comparison (§10) — note that much of the published Twilio-vs-Telnyx
+material is vendor-authored or affiliate SEO, and figures are mid-2026
+secondary sources rather than the vendors' own rate sheets:
+
+- [Telnyx vs Twilio Voice API: pricing, latency, and global coverage — Telnyx](https://telnyx.com/resources/telnyx-vs-twilio-which-voice-api-is-better) (vendor)
+- [Telnyx vs Twilio for elastic SIP trunking — Telnyx](https://telnyx.com/resources/telnyx-vs-twilio-sip-trunking) (vendor)
+- [TeXML / TwiML compatibility — Telnyx developers](https://developers.telnyx.com/docs/voice/programmable-voice/texml-twiml-compatibility)
+- [TeXML Bin: simple voicemail and call forwarding — Telnyx](https://support.telnyx.com/en/articles/13386198-texml-bin-simple-voicemail-and-call-forwarding)
+- [Telnyx vs Twilio: features, pricing, and support — Plivo](https://www.plivo.com/blog/telnyx-vs-twilio/) (a third vendor, so biased differently)
+- [Voice coverage — Twilio](https://www.twilio.com/en-us/voice/coverage)
+- [TwiML Voice: `<Dial>` — Twilio](https://www.twilio.com/docs/voice/twiml/dial)
 
 Providers and hosted infrastructure (§8):
 
