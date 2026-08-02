@@ -196,7 +196,7 @@ what *does* trigger a `REGISTER`, and can it simply be reboot, app start, and
 network change? The answer is better than it looks, and one of those three
 triggers is a trap.
 
-### With push, there is no cadence at all
+### With push, the device owns no timer — and may need no cadence at all
 
 The reason an always-registered client re-`REGISTER`s every few minutes is not
 really the SIP expiry (§1). It is that a binding is only useful while **the NAT
@@ -211,10 +211,17 @@ to hold open in between, so there is nothing to keep alive.
 Concretely, by model:
 
 - **Register-on-demand** (§7's webhook, and the PBX in §8 E) — no binding is
-  held at all. The device registers at call time, exactly as the outbound path
-  already does, and tears down after. Zero registrations between calls.
-- **RFC 8599** (§8 C and D) — a binding is held, but the *server* pushes when it
-  wants a refresh. Still no client-side timer, alarm, or keep-alive.
+  held at all, so there is genuinely **no cadence**. The device registers at call
+  time, exactly as the outbound path already does, and tears down after. Zero
+  registrations between calls.
+- **RFC 8599** (§8 C and D) — a binding *is* held, so there **is** a cadence; it
+  is simply not ours. The registrar has to push for a refresh before the
+  binding expires, and the device answers with a `REGISTER`. What push removes
+  here is the client-owned timer and the need to hold a live transport open —
+  not the periodic wake itself. Because the refresh interval is bounded by the
+  binding lease rather than by a NAT mapping, it can be minutes-to-hours rather
+  than tens of seconds, but it is not free, and §11 rates its idle cost as low
+  and unmeasured for exactly this reason.
 
 ### What actually needs to stay fresh is the push token, not the binding
 
@@ -223,17 +230,24 @@ the device is the FCM registration token, so **token freshness is the
 correctness surface, and binding freshness is either the server's job or
 irrelevant**. That changes which events are worth acting on:
 
-| Trigger | Register / refresh? | Why |
+**The right action differs by model, and conflating them breaks something
+either way** — so the table is split. In register-on-demand the token lives in
+our token store and a SIP `REGISTER` before a call would violate the
+zero-registration-between-calls invariant; in RFC 8599 the token *is* carried in
+the `REGISTER` contact, so there is nowhere else to put it.
+
+| Trigger | Register-on-demand (§7, §8 E) | RFC 8599 (§8 C, D) |
 |---|---|---|
-| **App start** | **Yes** | Free — the user is already here. The natural place to verify the token, revalidate credentials, and re-establish a binding that lapsed while the phone was off. Also the recovery point (below). |
-| **`onNewToken`** | **Yes** | The token has rotated; a server holding the old one is a phone that has silently stopped ringing (§3). |
-| **Credentials changed** | **Yes** | The user edited the account; the old binding is wrong. |
-| **Reboot** | **No** | FCM tokens survive reboots, so there is nothing to refresh — and apps targeting Android 15+ cannot launch a `phoneCall` foreground service from a `BOOT_COMPLETED` receiver anyway. |
-| **Network change** | **No — and this one is a trap** | See below. |
+| **App start** | **Yes** — publish the current token to the token store, revalidate credentials. No SIP registration. | **Yes** — `REGISTER`, which both refreshes the binding and carries the current token. The recovery point after a lapse. |
+| **`onNewToken`** | **Yes, to the token store only** — via the authenticated endpoint (§7). Registering here would hold a binding we do not want. | **Yes, via `REGISTER`** — the token travels in the contact, so a registration is the only way to deliver it. |
+| **Credentials changed** | **Yes** — the account changed; re-publish and revalidate. | **Yes** — the old binding is wrong. |
+| **Reboot** | **No.** Tokens survive reboots and no binding is held, so there is nothing to do. | **Worth considering.** A binding may have expired while the phone was off, leaving the registrar nothing to push at — see the failure modes below. Note the Android 15+ `BOOT_COMPLETED` restriction applies to launching a `phoneCall` foreground service, *not* to performing a plain `REGISTER`, so it is not the obstacle it first appears. Weigh a boot-time `REGISTER` against a wake on every boot. |
+| **Network change** | **No — a trap** | **No — a trap** |
 
 ### Why network change is the wrong trigger
 
-It is the most tempting of the three and the worst of them:
+The one answer that is the same in both models, and the most tempting of the
+three triggers:
 
 - It needs a `ConnectivityManager` callback that stays registered while the app
   is idle — precisely the standing background work the battery rule in
@@ -266,10 +280,24 @@ Both end in "it silently stopped ringing," and both recover only at app start:
   the account unused for longer than the server's retention — leaves nothing for
   the server to push at.
 
-Neither is fully preventable from inside the app, which is why the visible
-**registration-health indicator** §12 asks for is not optional polish: it is the
-only thing standing between these cases and a user who discovers the problem by
-missing a call.
+**Neither is detectable from inside the app while it is happening**, and this
+is worth being blunt about because it limits the mitigation §12 asks for. A
+force-stopped app cannot run, so it cannot receive a push, update a
+registration-health indicator, or raise a notification; and opening the app to
+*look* at the indicator is the same action that clears the force-stop and
+repairs the binding. The indicator therefore reports health at the moment the
+user is already fixing it, and stays silent through the entire window in which
+inbound was broken. The expired-binding case has the same shape.
+
+So the indicator is still worth building — it turns "is this thing working?"
+into a question the user can answer, and a "last successful registration / last
+push received" timestamp lets someone who suspects a problem confirm it — but
+it **cannot** warn during an outage, and the document should not pretend
+otherwise. Actually detecting these cases needs a signal from outside the app:
+a server-side watchdog noticing the device has not checked in for longer than
+expected, and reaching the user by some other channel. That is more
+infrastructure, and it is the kind of thing worth deciding deliberately rather
+than discovering after a missed call.
 
 ---
 
