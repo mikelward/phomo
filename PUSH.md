@@ -516,12 +516,22 @@ functionality Phomo actually wants, it is arguably the shortest path. Use one
 vendor's WebRTC SDK (Twilio's or Telnyx's) for **both** legs: outbound *and*
 inbound, replacing liblinphone rather than sitting beside it.
 
-**What this dissolves.** Nearly all of this document. There is no `REGISTER`, no
+**What this dissolves.** All the *SIP* machinery: no `REGISTER`, no contact
 binding, no expiry, no NAT keep-alive, no push gateway, no RFC 8599, no wake
-race, no `/ready` endpoint, no registration-health indicator. The provider sends
-the push, holds the call while the device wakes, and hands the app a ringing
-call object. §§2, 4, 7 and most of §8 are answers to questions this route does
-not ask.
+race, no `/ready` endpoint. The provider sends the push, holds the call while the
+device wakes, and hands the app a ringing call object. §§2, 4, 7 and most of §8
+are answers to questions this route does not ask.
+
+**What it does *not* dissolve — and this is easy to overstate.** The device
+still registers *with the provider*: Twilio's `Voice.register(...)` and Telnyx's
+login both bind the FCM token to an identity, and both must be repeated after
+`onNewToken`. So token rotation remains a live correctness surface with exactly
+the same failure mode as everywhere else in this document — inbound silently
+stops — and the **registration-health indicator survives too**. What goes away
+is the SIP binding lifecycle, not the idea of staying reachable. §4's trigger
+table therefore still applies to this route in its register-on-demand column,
+with "publish the token to the provider" substituted for "publish it to our
+token store." 
 
 **What it costs.**
 
@@ -533,9 +543,17 @@ not ask.
 - **One vendor's Android audio stack owns call quality** — echo cancellation,
   routing, Bluetooth, Telecom integration. That is the hardest thing to evaluate
   before placing real calls and the least affordable to get wrong.
-- **It still is not backend-free.** An access-token endpoint and an inbound
-  routing webhook are both required (§6 Option 4), and SMS would still need the
-  webhook of §9.
+- **A backend may still be needed — but how much is vendor-specific**, and
+  flattening the two distorts the comparison. Twilio's Voice SDK authenticates
+  with a JWT access token, so it needs an endpoint of ours to mint them, plus an
+  inbound routing webhook (a TwiML App returning `<Dial><Client>`) for a PSTN
+  number to reach the app. **Telnyx's SDK can authenticate directly with SIP
+  connection credentials** via `credentialLogin()` — no token minting, no server
+  — and a number assigned to that connection appears to route inbound without a
+  webhook, though that is worth confirming before relying on it. So this route
+  is plausibly **backend-free on Telnyx and not on Twilio**, which is a real
+  point in Telnyx's favor on the Option 6 path specifically. SMS, if wanted,
+  reintroduces a webhook either way (§9).
 
 **What it does not cost.** Media quality or PSTN reach — §8 A establishes that
 WebRTC is full-duplex by design, routinely bridged to the PSTN, and carries
@@ -1149,12 +1167,20 @@ not good enough to sign a contract on. Verify against the vendors' own rate
 sheets before committing.
 
 **And read the percentages as absolute money.** Vendor comparisons quote ratios
-because ratios flatter: "60% cheaper" is transformative at 100,000 minutes a
-month and close to meaningless at personal-use volume. A few hundred
-international minutes a month puts the gap between these two providers at
-roughly the price of a coffee — less than the Play Console fee amortized over a
-year. **Whatever else decides this, price probably should not**, unless usage
-turns out to be far higher than a single user's.
+because ratios flatter, and a ratio tells you nothing about the size of the
+cheque: the same "60% cheaper" is transformative at 100,000 minutes a month and
+may be trivial at one person's volume. **The absolute gap is unknown here**, and
+deliberately not estimated — it is the product of a monthly minute count and a
+per-destination rate spread, and this document has neither. International rates
+vary by more than an order of magnitude across destinations, so the gap could be
+negligible or could be real money depending on where the calls actually go.
+
+The practical consequence is a sequencing one: **work out the absolute monthly
+difference for the real destination mix before letting price weigh on this
+decision at all.** It is a short calculation once the rate cards are in hand,
+and until it is done the percentage rows above are the wrong basis for choosing
+a provider — the same criticism this section levels at the published
+comparisons.
 
 **A second pricing trap, specific to the SDK route.** The rows below compare
 *trunk* rates. SDK-originated calls are frequently priced on a different card
@@ -1237,12 +1263,15 @@ the number catalog ever needs somewhere unusual.
   looks like the better fit: cheaper, SIP credentials that unify both legs, free
   support, TwiML-compatible markup — against Twilio's ecosystem and call-quality
   telemetry.
-- **If it does not** (§6 Option 6, one vendor SDK for everything), the case
-  narrows sharply. The SIP-credentials argument disappears, the price advantage
-  is small in absolute terms at one user's volume, and what remains is Telnyx's
-  owned network and free support against Twilio's deeper ecosystem, better
-  telemetry and longer operating history. **On that reading it is close to a
-  toss-up, and arguably leans Twilio.**
+- **If it does not** (§6 Option 6, one vendor SDK for everything), the balance
+  shifts but not simply. The SIP-credentials *unification* argument disappears,
+  since there is no trunk to unify with — but credential login itself becomes an
+  advantage in its own right, because it plausibly makes the route backend-free
+  on Telnyx where Twilio needs a token-minting endpoint. Against that, Twilio
+  brings the deeper ecosystem, better telemetry and longer operating history,
+  and the price difference is of unknown size until the rates are pulled. **Call
+  it genuinely open**, with the backend-free property the most interesting thing
+  to verify.
 
 Either way, treat it as a hypothesis rather than a conclusion. Three things
 could overturn it, and none of them is more analysis:
@@ -1271,7 +1300,8 @@ calling layer is written against one vendor's SDK.
 | **1. Persistent registration** | costly, unmeasured | none | poor (Doze/OEM) | plain SIP | contradicts today's model; scoped variants soften it |
 | **2. RFC 8599 + own proxy** | low, unmeasured — refresh pushes | SIP proxy (VPS, ops) | best — request is held | RFC 8599 | fits, but adds a backend |
 | **3. Webhook fires push** | none | function + token store + auth'd update endpoint | fair — wake race | non-standard | fits, adds a small backend |
-| **4. Twilio Voice SDK** | none | token endpoint + inbound routing webhook | good — Twilio owns it | proprietary | breaks "no Twilio-specific protocol" |
+| **4. Twilio Voice SDK** (inbound only) | none | token endpoint + inbound routing webhook | good — Twilio owns it | proprietary | breaks "no Twilio-specific protocol"; second media stack |
+| **6. Vendor SDK for everything** | none | vendor-specific — plausibly none on Telnyx; token endpoint + routing webhook on Twilio | good — provider owns it | proprietary | replaces the SIP stack outright; one media stack, no portability |
 
 ---
 
