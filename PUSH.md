@@ -291,7 +291,8 @@ behind it as the PSTN gateway.
   the usual sense; §7 D prices it more carefully, because the reflex to dismiss
   it may be stronger than the actual burden deserves.
 - **Privacy:** a new always-listening server that sees all of the user's call
-  metadata, plus Google seeing a push per inbound call. `PRIVACY.md` would need
+  metadata, plus Google seeing a push per inbound call — and, depending on what
+  the payload carries, *who* is calling and when (§6). `PRIVACY.md` would need
   rewriting.
 - **Verdict:** technically the best of the self-directed options, and the only
   one that is both standards-based and compatible with our existing client. It
@@ -394,7 +395,9 @@ one-line verdict.
 2. The function verifies the `X-Twilio-Signature` header (without this, anyone
    who learns the URL can make the user's phone ring), looks up the device's
    current FCM registration token, and sends a **high-priority FCM data
-   message** carrying the `CallSid` and the caller's number.
+   message** carrying at least the `CallSid` — and the caller's number only if
+   we accept disclosing it to Google (see "the trick that hides most of the
+   latency" below).
 3. **The function does not answer yet.** It holds the HTTP response open,
    waiting for the app to call a `/ready` endpoint (authenticated, keyed by
    `CallSid`) once it has woken and registered. Twilio gives a webhook on the
@@ -406,7 +409,7 @@ one-line verdict.
 
    ```xml
    <Response>
-     <Dial timeout="30" answerOnBridge="true" ringTone="gb" action="/after">
+     <Dial timeout="30" answerOnBridge="true" ringTone="uk" action="/after">
        <Sip>sip:phomo@ourdomain.sip.twilio.com</Sip>
      </Dial>
    </Response>
@@ -415,7 +418,9 @@ one-line verdict.
    `answerOnBridge="true"` keeps Twilio from answering the PSTN leg early, so
    the caller hears genuine ringback and billing starts when the call is
    actually answered. `ringTone` supplies a country-appropriate ringback as
-   early media *during* the dial, without answering.
+   early media *during* the dial, without answering. Note the value is Twilio's
+   own enum, not ISO 3166 — the United Kingdom is `uk`, and `gb` is rejected
+   (error 13220, "invalid ringTone value").
 6. If the app never pings — push undelivered, no credentials, user's phone off —
    the function returns voicemail TwiML instead. **This fallback is mandatory**;
    without it a caller whose push never arrived listens to nothing until Twilio
@@ -446,11 +451,36 @@ webhook timeout, which is a harder ceiling than a retry loop would have been.
 
 ### The trick that hides most of the latency
 
-The push carries the caller's number, so the app can raise the incoming-call UI
+If the push carries the caller's number, the app can raise the incoming-call UI
 via `CallsManager.addCall` **the moment the push lands** — before registration
 has finished, before the `INVITE` exists. The user's phone starts ringing at
 push-delivery time rather than at `INVITE` time, which is where most of the
 perceived latency lives.
+
+**That "if" is a privacy decision, not a free optimization.** FCM payloads are
+encrypted in transit but not end-to-end, so a payload carrying the caller's
+number discloses *who is calling the user, and when*, to Google — materially
+more than the bare fact that a push occurred. Three ways to handle it, in
+descending order of how much latency they buy back:
+
+1. **Send the number.** Fastest and simplest; accept and document the
+   disclosure.
+2. **Send an opaque `CallSid` only, and have the app fetch the caller detail
+   over an authenticated channel** as it wakes. Google learns only that a call
+   arrived. Costs one extra round trip before the UI can show a name or number,
+   though the phone can start ringing as "unknown caller" immediately, so most
+   of the latency win survives.
+3. **Encrypt the payload** with a key established at registration. This is the
+   only option that gets both: the caller detail arrives in the push, so the UI
+   can be complete on the first frame with no extra round trip, *and* Google
+   sees ciphertext rather than a number. What it costs is key management —
+   establishing the key, rotating it, and handling the device that has lost
+   it — in a design whose whole appeal is being small.
+
+Option 2 is the simplest thing that protects the metadata, and option 3 is the
+better one if the extra round trip turns out to matter once wake latency is
+measured. Either way it is worth deciding deliberately rather than inheriting
+whatever the first prototype did.
 
 That is a genuine win, and it introduces a genuine new failure mode: a "ghost
 ring." If registration then fails, or the caller hangs up while we are still
@@ -524,7 +554,9 @@ Android SDK. You hold no push credentials logic, no registration, no gateway.
 
 - **Twilio Voice SDK** — upload an FCM service-account key as a Push Credential;
   `Voice.register(...)` binds identity + token; Twilio pushes on an inbound
-  call. Only infrastructure of ours is an access-token endpoint.
+  call. Infrastructure of ours is an access-token endpoint **plus an inbound
+  routing webhook** — a TwiML App returning `<Dial><Client>` — since
+  `Voice.register(...)` says where to push but does not route a PSTN call.
 - **Telnyx** — the closest thing to a drop-in for Phomo's situation, because the
   same account gives both cheap international termination *and* a push-capable
   Android SDK, and the SDK authenticates with ordinary **SIP credentials**. It
@@ -931,9 +963,9 @@ Tracked as a post-v1 item in `TODO.md`; no decision here.
 |---|---|---|---|---|---|
 | **0. Outbound-only** | none | none | n/a | n/a | as designed |
 | **1. Persistent registration** | costly, unmeasured | none | poor (Doze/OEM) | plain SIP | contradicts today's model; scoped variants soften it |
-| **2. RFC 8599 + own proxy** | none | SIP proxy (VPS, ops) | best — request is held | RFC 8599 | fits, but adds a backend |
+| **2. RFC 8599 + own proxy** | low, unmeasured — refresh pushes | SIP proxy (VPS, ops) | best — request is held | RFC 8599 | fits, but adds a backend |
 | **3. Webhook fires push** | none | function + token store + auth'd update endpoint | fair — wake race | non-standard | fits, adds a small backend |
-| **4. Twilio Voice SDK** | none | token endpoint only | good — Twilio owns it | proprietary | breaks "no Twilio-specific protocol" |
+| **4. Twilio Voice SDK** | none | token endpoint + inbound routing webhook | good — Twilio owns it | proprietary | breaks "no Twilio-specific protocol" |
 
 ---
 
@@ -998,11 +1030,11 @@ The dials, and what each option spends:
 
 | | We run | We implement | Money | Idle battery | Ring latency | Delivery reliability | Portable off the provider | Numbers |
 |---|---|---|---|---|---|---|---|---|
-| **C** — native RFC 8599 provider | nothing | a flag, **plus onboarding FCM credentials with them** | trunk only | none | best | best | yes | depends who |
-| **B** — rented gateway (SIPIS, Mizu) | nothing | their SDK, probably, **plus the same credential onboarding** | subscription | none | best | best | yes | free choice |
+| **C** — native RFC 8599 provider | nothing | a flag, **plus onboarding FCM credentials with them** | trunk only | low, unmeasured | best | best | yes | depends who |
+| **B** — rented gateway (SIPIS, Mizu) | nothing | their SDK, probably, **plus the same credential onboarding** | subscription | low, unmeasured | best | best | yes | free choice |
 | **A** — CPaaS SDK (Telnyx, Twilio) | token endpoint + inbound routing webhook | their SDK — but **one stack, not two** | trunk only | none | best | best | **no** | their catalog |
-| **D** — own push gateway | a small VM | a liblinphone flag | a few €/mo | none | best | best, but our uptime | yes | free choice |
-| **E** — hosted Asterisk / FreePBX | a PBX | the push, in a dialplan | VM + our time | none | best — holds the call | best, but our uptime | yes | **many providers at once** |
+| **D** — own push gateway | a small VM | a liblinphone flag | a few €/mo | low, unmeasured | best | best, but our uptime | yes | free choice |
+| **E** — hosted Asterisk / FreePBX | a PBX | the push, in a dialplan | VM + our time | none — no binding held | best — holds the call | best, but our uptime | yes | **many providers at once** |
 | **§6** — TwiML webhook + FCM | a function, token store, `/ready` endpoint | the inbound call path ourselves | ~free | none | fair — wake race | fair — loses some | yes | free choice |
 | **1-scoped** — register while charging / on Wi-Fi | nothing | a registration policy | trunk only | moderate, bounded | best when up | reachable only sometimes | yes | free choice |
 | **0** — outbound only | nothing | nothing | none | none | n/a | n/a | yes | n/a |
@@ -1011,10 +1043,29 @@ Reading it across: **A, B, C, and D all give the same excellent latency and
 reliability**, because in every one of them something stays reachable and holds
 the call. They differ only in what they charge for it — money, infrastructure,
 or portability. §6 is the one that is cheap in all three currencies and pays in
-latency and reliability instead. The scoped-registration variant pays in
-*availability* — reachable at home and at your desk, voicemail elsewhere — while
-costing nothing at all, which is an under-rated trade if the number is
-secondary.
+latency and reliability instead.
+
+**On idle battery, note that "none" is not quite free for the options that hold
+a binding.** B, C and D keep a server-side registration alive, and even with
+refresh pushes at normal priority (§2) the device still wakes to handle each one
+and completes a `REGISTER` round trip — real CPU and radio, just far less than a
+30-second keep-alive, and unmeasured until we know a provider's refresh cadence.
+
+The genuinely zero-idle options are the ones that hold **no binding at all**
+between calls, and there are three: §6's webhook, which registers on demand
+exactly as the outbound path already does; the vendor SDK, whose registration is
+a long-lived address rather than a refreshed lease; and **E as described in
+§7** — the Asterisk dialplan pushes only once an inbound call has arrived and
+then waits for the device to register, so nothing is bound between calls. E
+could of course be built the other way, with a standing registration to the PBX,
+but that would be a different design with a different battery cost, and it is
+not the one §7 describes.
+
+That is a small point in favor of the register-on-demand shapes that the rest of
+this document does not otherwise make. The scoped-registration variant pays in
+*availability* instead — reachable at home and at your desk, voicemail
+elsewhere — while costing nothing at all, which is an under-rated trade if the
+number is secondary.
 
 **Two findings have moved the balance since this table was first drawn.**
 
