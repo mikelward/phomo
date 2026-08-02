@@ -181,11 +181,15 @@ server we do not currently have.**
   (Pixel, Samsung) but means inbound would simply not work on a de-Googled
   device, where outbound still would.
 - **Token rotation is a correctness surface.** When FCM rotates the
-  registration token, the stored `pn-prid` is stale and inbound calls silently
-  stop arriving. The app has to wake on `onNewToken` and push a fresh
-  `REGISTER`. "Silently stops receiving calls" is the worst possible failure
-  mode for a phone app, so this needs a test and a visible health indicator,
-  not just a code path.
+  registration token, whatever the server stored is stale and inbound calls
+  silently stop arriving. The app has to act on `onNewToken` — but *what* it
+  does depends on the model, and getting this wrong breaks one design or the
+  other: under RFC 8599 the token travels in a `REGISTER` contact, so a fresh
+  registration is the only way to deliver it; under register-on-demand it goes
+  to the token store over an authenticated endpoint, and registering here would
+  hold a binding that model exists to avoid. §4 splits this out properly.
+  "Silently stops receiving calls" is the worst possible failure mode for a
+  phone app, so this needs a test, not just a code path.
 
 ---
 
@@ -1094,7 +1098,7 @@ sheets before committing.
 | **US inbound / min** | ~$0.0085; ~$0.0015 trunk | ~$0.001–0.0035 | Telnyx |
 | **Network** | Resells carrier capacity (largely Bandwidth in the US) with an API layer on top | Owns a private global IP network; licensed carrier in many markets | **Telnyx**, structurally |
 | **Latency** | Public-internet hops between components; more variance | Claims sub-100 ms p95 SIP latency on its own backbone | Telnyx — *vendor-sourced claim* |
-| **Call quality** | Opus / G.711 / G.722 | Same codecs, plus codec-preference ordering and **MOS/jitter metrics exposed in the SDK** | Telnyx, slightly |
+| **Call quality** | Opus / G.711 / G.722; `Call.getStats()` exposes MOS, jitter, packet loss and RTT, plus live quality-warning callbacks, plus **Voice Insights** server-side analytics | Same codecs, plus codec-preference ordering; SDK exposes call-quality metrics | **Twilio** — both give per-call telemetry, Twilio adds warnings and a whole analytics product |
 | **Operating history** | Enormous scale, long public status record | Fewer public incidents but far less history at scale | **Twilio** |
 | **Number coverage** | 100+ countries; better for the exotic (Brazil, UAE, Singapore toll-free) | 140+ claimed; strongest in US/CA/UK/AU/DE/FR/NL | Twilio for breadth; a tie for the four countries in §9 |
 | **Android SDK** | Voice SDK: identity + Push Credential, FCM | WebRTC SDK: **SIP credentials**, FCM, 5 push tokens/user, hold/mute, ringback, trickle ICE, codec preference, call-quality metrics | Telnyx |
@@ -1127,9 +1131,13 @@ price.** It authenticates with **ordinary SIP credentials**, so a single account
 and one credential set could cover both the trunk (outbound, liblinphone today)
 and the push-woken SDK path (inbound). Twilio's Voice SDK uses a separate
 identity + Push Credential model that does not line up with a SIP domain at all.
-The MOS and jitter metrics its SDK exposes are also directly useful against
-`AGENTS.md`'s call-quality bar — without them we would be guessing at audio
-quality rather than measuring it.
+Its SDK also exposes call-quality metrics, which matter against `AGENTS.md`'s
+call-quality bar — though **this is not a Telnyx advantage**, and an earlier
+draft of this section wrongly implied it was. Twilio's Voice SDK offers the same
+telemetry through `Call.getStats()` (MOS, jitter, packet loss, RTT), adds live
+quality-warning callbacks for high jitter, high packet loss and low MOS, and
+backs it with Voice Insights server-side. On measuring audio quality, Twilio is
+ahead, not behind.
 
 **4. Free 24/7 support is worth more to this project than to a company.** Phomo
 has one developer and no ops. When a call fails at 11pm on a real device against
@@ -1139,7 +1147,8 @@ asymmetry favors Telnyx more than the pricing does.
 
 ### Where Twilio still wins
 
-Operating history and ecosystem depth. When something breaks at 2am, the odds
+Operating history, ecosystem depth, and — as the table above now records —
+call-quality telemetry. When something breaks at 2am, the odds
 that someone has already written up the exact symptom are much higher with
 Twilio, and for a project whose hardest problems will be device- and
 carrier-specific that is not a small thing. Twilio is also the safer choice if
@@ -1148,8 +1157,8 @@ the number catalog ever needs somewhere unusual.
 ### Verdict
 
 **Telnyx looks like the better technical and economic fit** — cheaper,
-SIP-credential-based SDK, quality metrics, free support, TwiML-compatible
-markup — with Twilio's ecosystem as the main thing given up. But treat that as a
+SIP-credential-based SDK, free support, TwiML-compatible markup — with Twilio's
+ecosystem *and its call-quality telemetry* as the things given up. But treat that as a
 hypothesis rather than a conclusion until two things are checked, either of
 which could overturn it:
 
@@ -1467,6 +1476,8 @@ secondary sources rather than the vendors' own rate sheets:
 - [TeXML Bin: simple voicemail and call forwarding — Telnyx](https://support.telnyx.com/en/articles/13386198-texml-bin-simple-voicemail-and-call-forwarding)
 - [Telnyx vs Twilio: features, pricing, and support — Plivo](https://www.plivo.com/blog/telnyx-vs-twilio/) (a third vendor, so biased differently)
 - [Voice coverage — Twilio](https://www.twilio.com/en-us/voice/coverage)
+- [Voice Android SDK 5.3 — network and audio warnings API, MOS — Twilio](https://www.twilio.com/en-us/changelog/voice-android-sdk-5-3---network-and-audio-warnings-api--mos--and)
+- [Voice Insights call summary — Twilio](https://www.twilio.com/docs/voice/voice-insights/call-summary)
 - [TwiML Voice: `<Dial>` — Twilio](https://www.twilio.com/docs/voice/twiml/dial)
 
 Providers and hosted infrastructure (§8):
