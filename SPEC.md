@@ -20,7 +20,9 @@ platform, not a separate calling app you have to remember to open.
   registered and reachable around the clock, holding a network keep-alive and
   waking for every re-REGISTER. An outbound-only client can stay completely
   dormant until the moment the user places a call. Inbound calling is a
-  post-v1 consideration, not a v1 feature.
+  post-v1 consideration, not a v1 feature; `PUSH.md` explores whether a
+  push-woken registration (RFC 8599 / FCM) could add it without giving up the
+  dormant-while-idle model, and no option there has been adopted.
 - **Cheap overseas calling is the job.** The motivating use case is calling
   international numbers at SIP-trunk rates instead of carrier international
   rates. Domestic calls have no cost advantage over the SIM and should stay on

@@ -69,10 +69,17 @@ implements.
 
 ## Post-v1 (explicitly out of scope for v1)
 
-- [ ] Inbound calling (requires a different, more power-hungry registration
-      model — a deliberate product decision, not a small addition).
+- [ ] Inbound calling (requires a different registration model — a deliberate
+      product decision, not a small addition). `PUSH.md` reviews the push-woken
+      options (RFC 8599, a webhook-fired FCM push, the Twilio Voice SDK) and
+      what each would cost; nothing is decided.
 - [ ] Presenting the user's existing mobile number as outbound caller ID
       (depends on trunk-side verified-caller-ID configuration).
+- [ ] SMS on the same numbers. Providers deliver inbound messages by webhook to
+      an HTTPS endpoint, never to a registered SIP client, so this needs the
+      same small server the push options in `PUSH.md` describe — which cuts both
+      ways, since sharing it makes the push-woken call path cheaper. Consider
+      alongside inbound calling rather than separately.
 - [ ] Call history within the app.
 - [ ] Translations (English copy ships first and is approved in chat before any
       `values-*/` locale is touched — see `AGENTS.md` "Translations").
